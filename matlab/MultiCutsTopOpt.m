@@ -40,8 +40,6 @@ function result = MultiCutsTopOpt(params)
     end
 
     if strcmp(params.BC, 'inverter')
-        % EminList = [1e-2, 3e-3, 1e-3, 5e-4, 1e-4, 5e-5, 1e-5, 5e-6, 1e-6];
-        % MassList = params.Density * ones(1, 9);
         EminList = [1e-2, 1e-4];
         MassList = params.Density * ones(1, 2);
     else

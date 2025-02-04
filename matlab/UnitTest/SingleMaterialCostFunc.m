@@ -4,8 +4,8 @@ system("clear");
 
 params.dim = 2;
 
-params.nelx = 8;
-params.nely = 4;
+params.nelx = 32;
+params.nely = 24;
 
 params.Density = 0.3;
 
@@ -15,9 +15,11 @@ params.epsilon = 5e-3;
 
 % params.BC = 'inverter';
 % params.objective = 'compliant mechanism';
+% abbrev = 'CompMech';
 
 params.BC = 'cantilever';
 params.objective = 'minimum compliance';
+abbrev = 'MinComp';
 
 params.NumMaterial = 1;
 
@@ -73,4 +75,6 @@ freedofs = params.freedofs;
 F = params.F;
 U = params.U;
 
-save('SingleMaterialCostFunc.mat', 'alldofs', 'fixeddofs', 'freedofs', 'K', 'F', 'U');
+% save('SingleMaterialCostFunc.mat', 'alldofs', 'fixeddofs', 'freedofs', 'K', 'F', 'U');
+outputFile = [abbrev num2str(params.nelx) 'x' num2str(params.nely) '.mat'];
+save(outputFile, 'alldofs', 'fixeddofs', 'freedofs', 'K', 'F', 'U');

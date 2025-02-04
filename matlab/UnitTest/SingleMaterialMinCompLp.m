@@ -9,7 +9,6 @@ nelyList = [80, 160, 240, 320, 400];
 
 params.Density = 0.6;
 
-
 params.rmin = 2;
 params.epsilon = 5e-3;
 

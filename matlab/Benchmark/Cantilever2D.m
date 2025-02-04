@@ -6,14 +6,14 @@ addpath(genpath('../'));
 
 params.dim = 2;
 
-params.nelx = 200;
-params.nely = 100;
+params.nelx = 480;
+params.nely = 320;
 params.Density = 0.3;
 
 params.ClusterNelx = 15;
 params.ClusterNely = 10;
 
-params.rmin = 4;
+params.rmin = 8;
 params.epsilon = 5e-3;
 
 params.MilpSolver = 'milp';
@@ -26,7 +26,7 @@ params.PreStage = 1;
 params.singleCut = false;
 params.fixedD = false;
 params.storeIterResult = false;
-params.compareMilp = true;
+params.compareMilp = false;
 params.useQuantum = false;
 
 params.tolerance = 1e-9;
@@ -80,7 +80,7 @@ params.maxFem = 100;
 
 params.d0 = 0.3;
 params.verbose = true;
-params.visualizeStep = true;
+params.visualizeStep = false;
 params.visualizeLevel = false;
 
 result = MultiCutsTopOpt(params);
@@ -121,4 +121,5 @@ x = result.x;
 if strcmp(params.MilpSolver, 'dantzig-wolfe') && ~isempty(params.useQuantum) && params.useQuantum
     params.MilpSolver = 'dantzig-wolfe-quantum';
 end
-VisualizeBinary(x, params, ['Result/' num2str(params.nelx) 'x' num2str(params.nely) '_' params.MilpSolver '_' params.BC '_' num2str(params.NumMaterial) '.png']);
+% VisualizeBinary(x, params, ['Result/' num2str(params.nelx) 'x' num2str(params.nely) '_' params.MilpSolver '_' params.BC '_' num2str(params.NumMaterial) '.png']);
+Visualize(x, params, ['Result/' num2str(params.nelx) 'x' num2str(params.nely) '_' params.MilpSolver '_' params.BC '_' num2str(params.NumMaterial) '.png']);

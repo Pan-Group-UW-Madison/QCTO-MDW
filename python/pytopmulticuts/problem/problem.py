@@ -135,25 +135,22 @@ class LinearElasticity(Problem):
                 exit(1)
         self.nu = descriptor["poisson's ratio"]
         
-        E0 = self.E_list[-1]
-        ν = self.nu
+        self.E0 = self.E_list[-1]
+        self.ν = self.nu
         
         if descriptor["interpolation"] == "discrete":
             self.interpolation = "discrete"
-            self.eps = 1e-2
-            E = (self.eps + (1-self.eps)*self.rho_field) * E0
+            self.eps = Constant(self.mesh, 1e-2)
         else:
             self.interpolation = "continuous"
-            p, eps = 3, 1e-6
-            E = (eps + (1-eps)*self.rho_phys_field**p) * E0
-        μ = E / (2.0 * (1.0 + ν))
-        λ = E * ν / ((1.0 + ν) * (1.0 - 2.0 * ν))
+            self.eps = Constant(self.mesh, 1e-6)
         
         # Kinematics
         def epsilon(u):
             return ufl.sym(ufl.grad(u))
 
         def sigma(v):
+            λ, μ = self.lambda_mu
             return 2.0 * μ * ufl.sym(ufl.grad(v)) + λ * ufl.tr(ufl.sym(ufl.grad(v))) * ufl.Identity(len(v))
         
         self.disp_facets = locate_entities_boundary(self.mesh, self.dim-1, descriptor["disp_bc"])
@@ -203,6 +200,17 @@ class LinearElasticity(Problem):
         else:
             self.volume = self.rho_phys_field*self.dx
         self.total_volume = Constant(self.mesh, 1.0)*self.dx
+    
+    @property
+    def E(self):
+        if self.interpolation == "discrete":
+            return (self.eps + (1 - self.eps) * self.rho_field) * self.E0
+        else:
+            return (self.eps + (1 - self.eps) * self.rho_phys_field**3) * self.E0
+    
+    @property
+    def lambda_mu(self):
+        return self.E * self.ν / ((1.0 + self.ν) * (1.0 - 2.0 * self.ν)), self.E / (2.0 * (1.0 + self.ν))
         
     def summary(self):
         if self.comm.rank == 0:
@@ -230,8 +238,8 @@ class LinearElasticity(Problem):
                 print("  Number of dofs: ", 3*self.V.dofmap.index_map.size_global)
             print("  Number of materials: ", np.size(self.E_list, 0), flush=True)
     
-    def save_results(self):
-        with dolfinx.io.XDMFFile(self.mesh.comm, self.prefix+self.problem_name+".xdmf", "w") as xdmf:
+    def save_results(self, suffix=""):
+        with dolfinx.io.XDMFFile(self.mesh.comm, self.prefix+self.problem_name+suffix+".xdmf", "w") as xdmf:
             xdmf.write_mesh(self.mesh)
             if self.interpolation == "discrete":
                 xdmf.write_function(self.u_field)

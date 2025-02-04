@@ -18,7 +18,7 @@ function result = MultiCutsSubLp(x, obj, weight, d, params)
     clusteringSizeList = clusteringSizeList(logical(idx));
 
     if length(clusteringSizeList) > 5
-        clusteringSizeList = [clusteringSizeList(1:2) clusteringSizeList(end-3:end)];
+        clusteringSizeList = [clusteringSizeList(1:2) clusteringSizeList(end-2:end)];
     end
 
     y = cell(length(clusteringSizeList), 1);

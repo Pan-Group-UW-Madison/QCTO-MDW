@@ -28,7 +28,7 @@ class SimpOptimizer(Optimizer):
         
         if descriptor["subproblem_solver"] == "mma":
             self.sub_optimizer = MMAOptimizer(problem)
-            num_elems = self.problem.rho_field.vector.array.size
+            num_elems = self.problem.rho_field.x.petsc_vec.array.size
             rho_old1, rho_old2 = np.zeros(num_elems), np.zeros(num_elems)
             low, upp = None, None
         elif descriptor["subproblem_solver"] == "oc":
@@ -38,15 +38,16 @@ class SimpOptimizer(Optimizer):
             exit(1)
             
         rho_field = self.problem.rho_field
-        num_elems = rho_field.vector.array.size
+        num_elems = rho_field.x.petsc_vec.array.size
         centers = rho_field.function_space.tabulate_dof_coordinates()[:num_elems].T
         solid, void = descriptor["solid_zone"](centers), descriptor["void_zone"](centers)
         rho_ini = np.full(num_elems, descriptor["vol_frac"])
         rho_ini[solid], rho_ini[void] = 0.995, 0.005
-        rho_field.vector.array[:] = rho_ini
+        rho_field.x.petsc_vec.array[:] = rho_ini
         rho_min, rho_max = np.zeros(num_elems), np.ones(num_elems)
         rho_min[solid], rho_max[void] = 0.99, 0.01
         
+        self.num_fem = 0
         self.sub_optimizer.rho_min, self.sub_optimizer.rho_max = rho_min, rho_max
             
     def solve(self):
@@ -60,13 +61,14 @@ class SimpOptimizer(Optimizer):
         
         self.num_iter, beta, change = 0, 1, 2*self.opt_tol
         while self.num_iter < self.max_iter and change > self.opt_tol:
-            opt_start_time = time.perf_counter()
             self.num_iter += 1
             
+            opt_start_time = time.perf_counter()
             density_filter.forward()
             if self.num_iter % self.beta_interval == 0 and beta < self.beta_max:
                 beta *= 2
             heaviside.forward(beta)
+            opt_time = time.perf_counter() - opt_start_time
             
             # Solve FEM
             fem_sen_time = time.perf_counter()
@@ -86,15 +88,15 @@ class SimpOptimizer(Optimizer):
             self.analysis_time += fem_sen_time
             
             # Update the design variables
-            opt_time = time.perf_counter()
-            rho_values = self.problem.rho_field.vector.array.copy()
+            opt_start_time = time.perf_counter()
+            rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
             rho_new = self.sub_optimizer.update(rho_values, dJdrho, g_vec, dgdrho[0])
-            self.problem.rho_field.vector.array = rho_new.copy()
-            opt_time = time.perf_counter() - opt_time
+            self.problem.rho_field.x.petsc_vec.array = rho_new.copy()
+            opt_time += time.perf_counter() - opt_start_time
             self.optimization_time += opt_time
             
             if self.comm.rank == 0 and self.verbose > 0:
-                print(f"Iter: {self.num_iter:3d}, analysis time: {fem_sen_time:.3f} s, beta: {beta:2d}, C: {C_value:8.3f}, V: {V_value:.3f}", flush=True)
+                print(f"Iter: {self.num_iter:3d}, analysis time: {fem_sen_time:5.3f} s, optimization time: {opt_time:5.3f} s beta: {beta:2d}, C: {C_value:8.3f}, V: {V_value:.3f}", flush=True)
             
         self.running_time = time.perf_counter() - running_timer
         self.problem.summary()

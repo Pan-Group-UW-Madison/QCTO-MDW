@@ -8,7 +8,7 @@ class OCOptimizer(SubOptimizer):
         super().__init__(problem)
         
         self.move = move
-        num_elems = self.problem.rho_field.vector.size
+        num_elems = self.problem.rho_field.x.petsc_vec.size
         self.rho_min = np.zeros(num_elems)
         self.rho_max = np.ones(num_elems)
         

@@ -8,60 +8,86 @@ function result = MultiCutsSubLagrangian(x, obj, weight, d, params)
 
     l0 = size(x, 1) / params.NumMaterial;
 
-    oldLagrangian = zeros(numCon, 1);
-
-    difference = 0.5;
-
-    clusterSize = floor(params.nelx * params.nely / 400);
-
     freeVar = 1:l0;
 
+    maxLagrangian = inf(numCon, 1);
+    minLagrangian = zeros(numCon, 1);
+
+    clusterSize = min(params.nelx * params.nely, 1);
+    [xSub, weightSub] = Cluster(x, weight, params, clusterSize, 1:l0);
+    lagrangian = DualSub(xSub, obj, weightSub, d, params);
+
+    fprintf("lagrangian: %f\n", lagrangian(1));
+
     x0 = x(:, 1);
+    result = PrimalSub(x, x0, obj, weight, d, params, lagrangian, freeVar);
+    x0 = result.x;
 
-    loop = 0;
-    while difference > 1e-3 || clusterSize > 1
-        loop = loop + 1;
+    xInitial = x0;
 
-        [xSub, weightSub] = Cluster(x, weight, params, clusterSize);
+    result = CheckConstraint(result.x, d, params);
 
-        lagrangian = DualSub(xSub, obj, weightSub, d, params, freeVar);
-
-        if loop == 1
-            oldLagrangian = 0.5 * lagrangian;
+    for i = 1:length(result)
+        if result == 0
+            maxLagrangian(i) = lagrangian(i);
+        else
+            minLagrangian(i) = lagrangian(i);
         end
-
-        result1 = PrimalSub(x, x0, obj, weight, d, params, lagrangian, freeVar);
-        result2 = PrimalSub(x, x0, obj, weight, d, params, oldLagrangian, freeVar);
-
-        x1 = result1.x;
-        x2 = result2.x;
-
-        x1 = reshape(x1, params.nely, params.nelx, params.NumMaterial);
-        x2 = reshape(x2, params.nely, params.nelx, params.NumMaterial);
-
-        diff = zeros(params.nely, params.nelx);
-
-        for i = 1:params.NumMaterial
-            diff = diff + abs(x1(:, :, i) - x2(:, :, i));
-        end
-
-        % diff = min(diff(:), 1);
-
-        % freeVar = find(diff > 1e-3);
-
-        % fprintf(" difference: %5d\n", length(freeVar));
-
-        difference = norm(lagrangian - oldLagrangian) / norm(lagrangian);
-
-        oldLagrangian = 0.5 * (lagrangian + oldLagrangian);
-
-        clusterSize = max(floor(clusterSize / 2), 1);
     end
 
+    loop = 0;
+    while (norm(maxLagrangian - minLagrangian) / norm(maxLagrangian) > 1e-3)
+        loop = loop + 1;
+        lagrangian = 0.5 * (maxLagrangian + minLagrangian);
+        result = PrimalSub(x, x0, obj, weight, d, params, lagrangian, freeVar);
+
+        result = CheckConstraint(result.x, d, params);
+
+        for i = 1:length(result)
+            if result == 0
+                maxLagrangian(i) = lagrangian(i);
+            else
+                minLagrangian(i) = lagrangian(i);
+            end
+        end
+    end
+
+    fprintf("loop: %d\n", loop);
+
     result = PrimalSub(x, x0, obj, weight, d, params, lagrangian, freeVar);
+
+    xFinal = result.x;
+
+    xInitial = reshape(xInitial, params.nely, params.nelx, params.NumMaterial);
+    xFinal = reshape(xFinal, params.nely, params.nelx, params.NumMaterial);
+
+    diff = zeros(params.nely, params.nelx);
+
+    for i = 1:params.NumMaterial
+        diff = diff + abs(xInitial(:, :, i) - xFinal(:, :, i));
+    end
+
+    diff = min(diff(:), 1);
+    fprintf("difference: %d\n", length(find(diff > 1e-3)));
+    fprintf("Objective: %f\n", result.obj);
 end
 
-function [xSub, weightSub] = Cluster(x, weight, params, clusterRatio)
+function [xSub, weightSub] = Cluster(x, weight, params, clusterRatio, freeVar)
+    numEle = size(x, 1) / params.NumMaterial;
+
+    if params.NumMaterial == 1
+        idx1 = freeVar;
+    else
+        idx1Compressed = freeVar;
+        idx1 = zeros(length(idx1Compressed) * params.NumMaterial, 1);
+        for j = 1:params.NumMaterial
+            idx1((j-1)*length(idx1Compressed)+1:j*length(idx1Compressed)) = (j-1)*numEle + idx1Compressed;
+        end
+    end
+
+    x = x(idx1, :);
+    weight = weight(idx1, :);
+
     if clusterRatio == 1
         xSub = x;
         weightSub = weight;
@@ -79,16 +105,14 @@ function [xSub, weightSub] = Cluster(x, weight, params, clusterRatio)
     weightSub = zeros((fullClusteredSize + outClusteredSize) * params.NumMaterial, M);
 
     for m = 1:M
-        xReshaped = reshape(x(:, m), params.nely, params.nelx, params.NumMaterial);
-        weightReshaped = reshape(weight(:, m), params.nely, params.nelx, params.NumMaterial);
+        xReshaped = reshape(x(:, m), [], params.NumMaterial);
+        weightReshaped = reshape(weight(:, m), [], params.NumMaterial);
 
         xM = zeros(fullClusteredSize + outClusteredSize, params.NumMaterial);
         weightM = zeros(fullClusteredSize + outClusteredSize, params.NumMaterial);
         for n = 1:params.NumMaterial
-            xFlatten = xReshaped(:, :, n);
-            xFlatten = xFlatten(:);
-            weightFlatten = weightReshaped(:, :, n);
-            weightFlatten = weightFlatten(:);
+            xFlatten = xReshaped(:, n);
+            weightFlatten = weightReshaped(:, n);
 
             xSubReshaped = reshape(xFlatten(1:fullClusteredSize*clusterRatio), clusterRatio, fullClusteredSize);
             xM(1:fullClusteredSize, n) = sum(xSubReshaped) / clusterRatio;
@@ -132,7 +156,7 @@ function result = PrimalSub(x, y, obj, weight, d, params, lagrangian, freeVar)
     end
 
     if n > 1
-        l = numEle;
+        l = length(idx1Compressed);
 
         numDesignVar = l * params.NumMaterial;
         numVar = l * params.NumMaterial + 1;
@@ -150,9 +174,8 @@ function result = PrimalSub(x, y, obj, weight, d, params, lagrangian, freeVar)
             rhs(numSensitivity+numTrustRegion+1) = params.mass;
         else
             nnz = numSensitivity*numVar + numTrustRegion*numDesignVar + numDesignVar*2;
-            rhs = zeros(numSensitivity + numTrustRegion + l + 1, 1);
+            rhs = ones(numSensitivity + numTrustRegion + l + 1, 1);
             rhs(numSensitivity+numTrustRegion+1) = params.mass;
-            rhs(numSensitivity+numTrustRegion+2:numSensitivity+numTrustRegion+1+l) = 1;
         end
 
         row = zeros(nnz, 1);
@@ -257,9 +280,10 @@ function result = PrimalSub(x, y, obj, weight, d, params, lagrangian, freeVar)
         numVar = l * params.NumMaterial;
 
         model.obj = -weight(idx1);
-        moveLimit = zeros(numEle, 1);
+        
+        moveLimit = zeros(l0, 1);
         for jj = 1:params.NumMaterial
-            moveLimit = moveLimit + x((jj-1)*numEle+1:jj*numEle, 1);
+            moveLimit = moveLimit + x((jj-1)*l0+1:jj*l0, 1);
         end
         moveLimit = 1 - 2 * moveLimit;
         moveLimit = moveLimit';
@@ -345,7 +369,7 @@ function result = PrimalSub(x, y, obj, weight, d, params, lagrangian, freeVar)
     end
 end
 
-function lagrangian = DualSub(x, obj, weight, d, params, freeVar)
+function lagrangian = DualSub(x, obj, weight, d, params)
     n = size(x, 2);
 
     if n == 1
@@ -353,18 +377,16 @@ function lagrangian = DualSub(x, obj, weight, d, params, freeVar)
     else
         lagrangian = ones(2 * n + 1, 1);
     end
-    
-    l0 = size(x, 1) / params.NumMaterial;
-    numEle = l0;
 
     if n > 1
         l = floor(size(x, 1) / params.NumMaterial);
         numVar = l * params.NumMaterial + 1;
         numDesignVar = l * params.NumMaterial;
+
         if params.NumMaterial == 1
             numAdditionalCon = 2 * n;
         else
-            numAdditionalCon = 2 * n + numEle;
+            numAdditionalCon = 2 * n + l;
         end
 
         etaOffset = l * params.NumMaterial + 1;
@@ -441,15 +463,22 @@ function lagrangian = DualSub(x, obj, weight, d, params, freeVar)
             end
         end
 
-        model.obj = f;
+        fprintf("number of materials: %5d\n", params.NumMaterial);
+        fprintf("number of variables: %5d\n", numDesignVar);
+        fprintf("row max: %5d\n", max(row));
 
-        A = [sparse(row, col, val)' sparse(1:numVar, 1:numVar, ones(numVar, 1))];
+        A = [sparse(row, col, val)' sparse(1:numDesignVar, 1:numDesignVar, ones(numDesignVar, 1), numVar, numDesignVar)];
 
-        model.obj = [rhs; ones(numVar, 1)];
+        model.obj = [rhs; ones(numDesignVar, 1)];
         model.A = -A;
         model.rhs = f;
         model.sense = '<';
         model.vtype = 'C';
+
+        fprintf("size of obj: %5d\n", size(model.obj, 1));
+        fprintf("size of A: %5d %5d\n", size(A, 1), size(A, 2));
+        fprintf("numVar: %5d\n", numVar);
+        fprintf("numAdditionalCon: %5d\n", numAdditionalCon);
 
         model.lb = zeros(numVar+numAdditionalCon, 1);
         model.ub = inf(numVar+numAdditionalCon, 1);
@@ -481,7 +510,7 @@ function lagrangian = DualSub(x, obj, weight, d, params, freeVar)
         if params.NumMaterial == 1
             numAdditionalCon = 2;
         else
-            numAdditionalCon = 2 + numEle;
+            numAdditionalCon = 2 + l;
         end
 
         moveLimit = zeros(l, 1);
@@ -560,6 +589,45 @@ function lagrangian = DualSub(x, obj, weight, d, params, freeVar)
                 fprintf("    Warning: infeasible\n");
                 break;
             end
+        end
+    end
+end
+
+function result = CheckConstraint(x, d, params)
+    n = size(x, 2);
+    if n == 1
+        result = zeros(2, 1);
+    else
+        result = zeros(2 * n + 1, 1);
+    end
+
+    l0 = size(x, 1) / params.NumMaterial;
+
+    mass = 0;
+    for i = 1:params.NumMaterial
+        mass = mass + params.density(i) * sum(x((i-1)*l0+(1:l0))) / l0;
+    end
+    if mass > params.mass
+        result(1) = 1;
+    end
+
+    d0 = d;
+    for i = 1:n
+        moveLimit = zeros(l0, 1);
+        for j = 1:params.NumMaterial
+            moveLimit = moveLimit + x((j-1)*l0+1:j*l0, i);
+        end
+        moveLimit = 1 - 2 * moveLimit;
+        moveLimit = moveLimit';
+
+        for j = 1:params.NumMaterial
+            d0(i) = d0(i) - moveLimit * x((j-1)*l0+(1:l0), i);
+        end
+    end
+
+    for i = 1:n
+        if d0(i) < 0
+            result(2*(i-1)+1) = 1;
         end
     end
 end

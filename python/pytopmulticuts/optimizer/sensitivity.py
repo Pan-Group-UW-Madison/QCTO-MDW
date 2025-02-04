@@ -32,14 +32,20 @@ class Sensitivity():
         self.opt_compliance = problem.objective == "compliance"
         if self.opt_compliance:
             self.C_form = form(problem.compliance)
-        self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_phys_field))
+        if problem.interpolation == "continuous":
+            self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_phys_field))
+        else:
+            self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_field))
         self.dCdrho_vec = create_vector(self.dCdrho_form)
 
         # Volume
         self.total_volume = comm.allreduce(
             assemble_scalar(form(problem.total_volume)), op=MPI.SUM)
         self.V_form = form(problem.volume)
-        dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_phys_field))
+        if problem.interpolation == "continuous":
+            dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_phys_field))
+        else:
+            dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_field))
         self.dVdrho_vec = create_vector(dVdrho_form)
         assemble_vector(self.dVdrho_vec, dVdrho_form)
         self.dVdrho_vec.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
@@ -51,8 +57,8 @@ class Sensitivity():
             self.dfdrho_mat = create_matrix(self.dfdrho_form)
             self.problem, self.l_vec = problem, problem.l_vec
             self.u_field, self.lambda_field = u_field, lambda_field
-            self.dUdrho_vec = problem.rho_phys_field.vector.copy()
-            self.prod_vec = u_field.vector.copy()
+            self.dUdrho_vec = problem.rho_phys_field.x.petsc_vec.copy()
+            self.prod_vec = u_field.x.petsc_vec.copy()
 
     def __del__(self):
         if not self.opt_compliance:
@@ -63,8 +69,8 @@ class Sensitivity():
         if self.opt_compliance:
             C_value = self.comm.allreduce(assemble_scalar(self.C_form), op=MPI.SUM)
         else:
-            self.problem.lhs_mat.mult(self.u_field.vector, self.prod_vec)
-            C_value = self.u_field.vector.dot(self.prod_vec)
+            self.problem.lhs_mat.mult(self.u_field.x.petsc_vec, self.prod_vec)
+            C_value = self.u_field.x.petsc_vec.dot(self.prod_vec)
         with self.dCdrho_vec.localForm() as loc:
             loc.set(0)
         assemble_vector(self.dCdrho_vec, self.dCdrho_form)
@@ -75,12 +81,12 @@ class Sensitivity():
 
         # Displacement
         if not self.opt_compliance:
-            U_value = self.u_field.vector.dot(self.l_vec)
+            U_value = self.u_field.x.petsc_vec.dot(self.l_vec)
             self.problem.solve_adjoint()
             self.dfdrho_mat.zeroEntries()
             assemble_matrix(self.dfdrho_mat, self.dfdrho_form)
             self.dfdrho_mat.assemble()
-            self.dfdrho_mat.mult(self.lambda_field.vector, self.dUdrho_vec)
+            self.dfdrho_mat.mult(self.lambda_field.x.petsc_vec, self.dUdrho_vec)
         else:
             U_value, self.dUdrho_vec = 0, None
 

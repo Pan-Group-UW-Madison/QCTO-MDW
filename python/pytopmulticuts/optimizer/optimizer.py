@@ -17,11 +17,17 @@ class Optimizer:
     def summary(self):
         if self.comm.rank == 0:
             print("Optimization summary:")
-            print("  Optimizer: " + bcolors.OKBLUE + self.optimizer_name + bcolors.ENDC)
-            print("  Number of iterations: " + bcolors.OKBLUE + f"{self.num_iter}" + bcolors.ENDC)
-            print("  Total analysis time: " + bcolors.OKBLUE + f"{self.analysis_time:.4f}" + bcolors.ENDC + " s")
-            print("  Total optimization time: " + bcolors.OKBLUE + f"{self.optimization_time:.4f}" + bcolors.ENDC + " s")
-            print("  Total running time: " + bcolors.OKBLUE + f"{self.running_time:.4f}" + bcolors.ENDC + " s", flush=True)
+            # print("  Optimizer: " + bcolors.OKBLUE + self.optimizer_name + bcolors.ENDC)
+            # print("  Number of iterations: " + bcolors.OKBLUE + f"{self.num_iter}" + bcolors.ENDC)
+            # print("  Total analysis time: " + bcolors.OKBLUE + f"{self.analysis_time:.4f}" + bcolors.ENDC + " s")
+            # print("  Total optimization time: " + bcolors.OKBLUE + f"{self.optimization_time:.4f}" + bcolors.ENDC + " s")
+            # print("  Total running time: " + bcolors.OKBLUE + f"{self.running_time:.4f}" + bcolors.ENDC + " s", flush=True)
+            print("  Optimizer: " + self.optimizer_name)
+            print("  Number of iterations: " + f"{self.num_iter}")
+            print("  Number of FEM analysis: " + f"{self.num_fem}")
+            print("  Total analysis time: " + f"{self.analysis_time:.4f} s")
+            print("  Total optimization time: " + f"{self.optimization_time:.4f} s")
+            print("  Total running time: " + f"{self.running_time:.4f} s", flush=True)
 
 class SubOptimizer:
     def __init__(self, problem):
@@ -41,7 +47,7 @@ class DensityFilter():
         self.rho, self.rho_tilde = rho, rho_tilde
         self.rho_tilde_wrap = la.create_petsc_vector_wrap(self.rho_tilde.x)
         self.af_wrap = la.create_petsc_vector_wrap(self.af.x)
-        self.vec_s0, self.vec_s = rho.vector.copy(), rho_tilde.vector.copy()
+        self.vec_s0, self.vec_s = rho.x.petsc_vec.copy(), rho_tilde.x.petsc_vec.copy()
 
         # Construct Kf and T matrices based on the Helmholtz PDE
         dx = ufl.Measure("dx", metadata={"quadrature_degree": 2})
@@ -77,11 +83,10 @@ class DensityFilter():
 
     def forward(self):
         """Compute the filtered variables."""
-        self.T_mat.mult(self.rho.vector, self.vec_s)
+        self.T_mat.mult(self.rho.x.petsc_vec, self.vec_s)
         self.solver.solve(self.vec_s, self.rho_tilde_wrap)
         self.rho_tilde.x.scatter_forward()
         return self.rho_tilde
-        pass
 
     def backward(self, sf_vectors):
         """Recover the sensitivities."""
@@ -90,10 +95,52 @@ class DensityFilter():
             if sf is not None:
                 self.solver.solve(sf, self.af_wrap)
                 self.af.x.scatter_forward()
-                self.T_mat_transpose.mult(self.af.vector, self.vec_s0)
+                self.T_mat_transpose.mult(self.af.x.petsc_vec, self.vec_s0)
                 values.append(self.vec_s0.array.copy())
             else:
                 values.append(None)
+        return values
+    
+class SensitivityFilter():
+    def __init__(self, problem, R, petsc_options={}):
+        # Initialization
+        S0 = problem.rho_field.function_space
+        u = ufl.TrialFunction(S0)
+        v = ufl.TestFunction(S0)
+    
+        self.vec_x = la.create_petsc_vector_wrap(Function(S0).x)
+        self.vec_s = la.create_petsc_vector_wrap(Function(S0).x)
+        
+        dx = ufl.Measure("dx", metadata={"quadrature_degree": 2})
+        Kf_expr = (-R**2*ufl.dot(ufl.grad(u), ufl.grad(v)) + u*v)*dx
+        Kf_form = form(Kf_expr)
+        Kf_mat = create_matrix(Kf_form)
+        
+        # Construct a filtering solver
+        comm = MPI.COMM_WORLD
+        self.solver = PETSc.KSP().create(comm)
+        self.solver.setOperators(Kf_mat)
+        prefix = f"filter_solver_{id(self)}"
+        self.solver.setOptionsPrefix(prefix)
+        
+        # Apply PETSc options
+        opts = PETSc.Options()
+        opts.prefixPush(prefix)
+        for key, value in petsc_options.items():
+            opts[key] = value
+        opts.prefixPop()
+        self.solver.setFromOptions()
+        Kf_mat.setOptionsPrefix(prefix)
+        Kf_mat.setFromOptions()
+
+        # Assemble Kf and T matrices
+        assemble_matrix(Kf_mat, Kf_form)
+        Kf_mat.assemble()
+        
+    def filter(self, sensitivities):
+        self.vec_x.array = sensitivities
+        self.solver.solve(self.vec_x, self.vec_s)
+        values = self.vec_s.array.copy()
         return values
 
 class Heaviside():
@@ -102,9 +149,9 @@ class Heaviside():
 
     def forward(self, beta, eta=0.5):
         denominator = np.tanh(beta*eta) + np.tanh(beta*(1-eta))
-        self.drho = beta*(1-np.tanh(beta*(self.rho_phys.vector-eta))**2) / denominator
-        self.rho_phys.vector.array = (
-            np.tanh(beta*eta)+np.tanh(beta*(self.rho_phys.vector-eta))) / denominator
+        self.drho = beta*(1-np.tanh(beta*(self.rho_phys.x.petsc_vec-eta))**2) / denominator
+        self.rho_phys.x.petsc_vec.array = (
+            np.tanh(beta*eta)+np.tanh(beta*(self.rho_phys.x.petsc_vec-eta))) / denominator
         self.rho_phys.x.scatter_forward()
 
     def backward(self, vectors):
