@@ -120,25 +120,34 @@ class MulticutsOptimizer(Optimizer):
         
         num_consts = 1 if self.problem.objective == "compliance" else 2
         
-        if descriptor["subproblem_solver"] == "milp":
-            self.sub_optimizer = MilpOptimizer(problem)
-        elif descriptor["subproblem_solver"] == "dw":
-            self.sub_optimizer = DWOptimizer(problem, descriptor["num_divisions"], descriptor["solver_type"])
-        else:
-            raise ValueError("Invalid subproblem_solver")
-            exit(1)
-        
         rho_field = self.problem.rho_field
         num_elems = rho_field.x.petsc_vec.array.size
         centers = rho_field.function_space.tabulate_dof_coordinates()[:num_elems].T
         solid, void = descriptor["solid_zone"](centers), descriptor["void_zone"](centers)
         rho_ini = np.full(num_elems, descriptor["vol_frac"])
-        rho_ini[solid], rho_ini[void] = 1.0, 1e-9
+        rho_ini[solid], rho_ini[void] = 1.0, 1e-4
         rho_field.x.petsc_vec.array[:] = rho_ini
+        
+        self.free = np.where((solid == False) & (void == False))
+        self.num_free = len(self.free[0])
+        
+        num_fixed = num_elems - self.num_free
+        num_fixed_global = self.comm.allreduce(num_fixed, op=MPI.SUM)
+        num_elems_global = self.comm.allreduce(num_elems, op=MPI.SUM)
+        
+        self.vol_frac -= num_fixed_global / num_elems_global
         
         self.num_fem = 0
         
         self.cuts = Cuts()
+        
+        if descriptor["subproblem_solver"] == "milp":
+            self.sub_optimizer = MilpOptimizer(problem)
+        elif descriptor["subproblem_solver"] == "dw":
+            self.sub_optimizer = DWOptimizer(problem, self.num_free, num_elems, descriptor["num_divisions"], descriptor["solver_type"])
+        else:
+            raise ValueError("Invalid subproblem_solver")
+            exit(1)
         
     def solve_prime(self):
         self.problem.solve_prime()
@@ -193,17 +202,17 @@ class MulticutsOptimizer(Optimizer):
                 eps_list = np.ones(n+2) * 1e-2
                 eps_list[-2] = 1e-3
                 eps_list[-1] = 1e-4
-        else:
-            vol_frac_list = [self.vol_frac, self.vol_frac]
-            eps_list = [1e-2, 1e-4]
+            else:
+                vol_frac_list = [self.vol_frac, self.vol_frac]
+                eps_list = np.array([1e-2, 1e-4])
         
-        self.problem.rho_field.x.petsc_vec.array[:] = vol_frac_list[0]
+        self.problem.rho_field.x.petsc_vec.array[self.free] = vol_frac_list[0]
         
         self.stage = 0
         
         while self.stage < len(vol_frac_list) and self.num_fem < self.max_iter:
             if self.comm.rank == 0:
-                print(f"Stage: {self.stage}, Vol frac: {vol_frac_list[self.stage]}", flush=True)
+                print(f"Stage: {self.stage}, Vol frac: {vol_frac_list[self.stage]:.4f}", flush=True)
             self.vol_frac = vol_frac_list[self.stage]
             self.problem.eps.value = eps_list[self.stage]
             # jump start
@@ -214,12 +223,12 @@ class MulticutsOptimizer(Optimizer):
                 self.analysis_time += fem_sen_time
                 
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
+                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
                 if self.stage == 0:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho, self.vol_frac, 1.0)
+                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, 1.0)
                 else:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho, self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array = rho_new.copy()
+                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, self.d)
+                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
@@ -236,12 +245,12 @@ class MulticutsOptimizer(Optimizer):
                 rho_optimal = None
             else:
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
+                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
                 if self.stage == 0:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho, self.vol_frac, 1.0)
+                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, 1.0)
                 else:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho, self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array = rho_new.copy()
+                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, self.d)
+                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
@@ -273,7 +282,6 @@ class MulticutsOptimizer(Optimizer):
                     self.d = self.update_trust_region(old_c, C_value, cost, self.d)
                 
                 # stack the cuts
-                rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
                 if num_inner_iter == 1:
                     c = C_value
                     old_c = c
@@ -288,11 +296,10 @@ class MulticutsOptimizer(Optimizer):
                 condition3 = (C_value > upper_bound) and (cost > upper_bound)
                 
                 # branch over the cuts
-                # single cut first
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
-                rho_new, cost = self.multi_cuts(rho_values, c, sens, self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array = rho_new.copy()
+                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
+                rho_new, cost = self.multi_cuts(rho_values, c, sens[self.free], self.vol_frac, self.d)
+                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
@@ -322,7 +329,7 @@ class MulticutsOptimizer(Optimizer):
             
             self.stage += 1
             
-            self.problem.rho_field.x.petsc_vec.array = rho_optimal.copy()
+            self.problem.rho_field.x.petsc_vec.array[self.free] = rho_optimal.copy()
             
             self.num_iter += num_inner_iter
             

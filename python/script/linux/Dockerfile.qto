@@ -1,0 +1,50 @@
+FROM dolfinx/dolfinx:stable
+
+# necessary packages
+COPY dependencies.sh /opt/dependencies.sh
+RUN apt-get update && \
+    /opt/dependencies.sh && \
+    rm -rf /var/lib/apt/lists/*
+  RUN python3 -m pip install scipy numba scikit-learn
+
+# gurobi
+ARG GRB_VERSION=11.0.0
+ARG GRB_SHORT_VERSION=11.0
+ARG TARGETPLATFORM
+
+RUN if [ "$TARGETPLATFORM" = "linux/arm64" ]; then \
+        echo "armlinux64" > /platform.txt; \
+      else \
+        echo "linux64" > /platform.txt; \
+    fi
+
+WORKDIR /opt
+
+RUN export GRB_PLATFORM=$(cat /platform.txt) && echo $GRB_PLATFORM \
+    &&apt-get update \
+    && apt-get install --no-install-recommends -y\
+       ca-certificates  \
+       wget \
+    && update-ca-certificates \
+    && wget -v https://packages.gurobi.com/${GRB_SHORT_VERSION}/gurobi${GRB_VERSION}_$GRB_PLATFORM.tar.gz \
+    && tar -xvf gurobi${GRB_VERSION}_$GRB_PLATFORM.tar.gz  \
+    && rm -f gurobi${GRB_VERSION}_$GRB_PLATFORM.tar.gz \
+    && mv -f gurobi* gurobi \
+    && rm -rf gurobi/$GRB_PLATFORM/docs \
+    && mv -f gurobi/$GRB_PLATFORM*  gurobi/linux
+
+LABEL vendor="Gurobi"
+LABEL version=${GRB_VERSION}
+
+RUN python3 -m pip install gurobipy==${GRB_VERSION}
+
+ENV GUROBI_HOME /opt/gurobi/linux
+ENV PATH $PATH:$GUROBI_HOME/bin
+ENV LD_LIBRARY_PATH $LD_LIBRARY_PATH:$GUROBI_HOME/lib
+ENV GRB_LICENSE_FILE $GUROBI_HOME/gurobi.lic
+
+WORKDIR /opt/gurobi/linux
+
+CMD ["gurobi.sh"]
+
+COPY ./gurobi.lic /opt/gurobi/linux/gurobi.lic

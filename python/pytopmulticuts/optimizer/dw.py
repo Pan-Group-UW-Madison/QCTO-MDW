@@ -6,13 +6,14 @@ import math
 import gurobipy as gp
 
 from .optimizer import SubOptimizer
+from .quantum import sparse_encoding_blp
 
 class DWOptimizer(SubOptimizer):
-    def __init__(self, problem, num_divisions=1, solver_type="classical"):
+    def __init__(self, problem, num_free_size, num_local_size, num_divisions=1, solver_type="classical"):
         super().__init__(problem)
         
-        self.rho_local_size = problem.rho_field.x.petsc_vec.array.size
-        self.rho_global_size = int(self.comm.allreduce(self.rho_local_size))
+        self.rho_local_size = num_free_size
+        self.rho_global_size = int(self.comm.allreduce(num_local_size))
         
         rho_size_by_rank = self.comm.allgather(self.rho_local_size)        
         self.rho_offset = np.cumsum([0] + rho_size_by_rank)

@@ -17,11 +17,6 @@ class Optimizer:
     def summary(self):
         if self.comm.rank == 0:
             print("Optimization summary:")
-            # print("  Optimizer: " + bcolors.OKBLUE + self.optimizer_name + bcolors.ENDC)
-            # print("  Number of iterations: " + bcolors.OKBLUE + f"{self.num_iter}" + bcolors.ENDC)
-            # print("  Total analysis time: " + bcolors.OKBLUE + f"{self.analysis_time:.4f}" + bcolors.ENDC + " s")
-            # print("  Total optimization time: " + bcolors.OKBLUE + f"{self.optimization_time:.4f}" + bcolors.ENDC + " s")
-            # print("  Total running time: " + bcolors.OKBLUE + f"{self.running_time:.4f}" + bcolors.ENDC + " s", flush=True)
             print("  Optimizer: " + self.optimizer_name)
             print("  Number of iterations: " + f"{self.num_iter}")
             print("  Number of FEM analysis: " + f"{self.num_fem}")
