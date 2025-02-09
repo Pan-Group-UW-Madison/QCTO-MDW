@@ -55,7 +55,7 @@ class Sensitivity():
         if not self.opt_compliance:
             self.dfdrho_form = form(ufl.adjoint(ufl.derivative(problem.f_int, problem.rho_phys_field)))
             self.dfdrho_mat = create_matrix(self.dfdrho_form)
-            self.problem, self.l_vec = problem, problem.l_vec
+            self.problem = problem
             self.u_field, self.lambda_field = u_field, lambda_field
             self.dUdrho_vec = problem.rho_phys_field.x.petsc_vec.copy()
             self.prod_vec = u_field.x.petsc_vec.copy()
@@ -79,17 +79,6 @@ class Sensitivity():
         V_value = actual_volume / self.total_volume
         self.dVdrho_vec_copy = self.dVdrho_vec.copy()
 
-        # Displacement
-        if not self.opt_compliance:
-            U_value = self.u_field.x.petsc_vec.dot(self.l_vec)
-            self.problem.solve_adjoint()
-            self.dfdrho_mat.zeroEntries()
-            assemble_matrix(self.dfdrho_mat, self.dfdrho_form)
-            self.dfdrho_mat.assemble()
-            self.dfdrho_mat.mult(self.lambda_field.x.petsc_vec, self.dUdrho_vec)
-        else:
-            U_value, self.dUdrho_vec = 0, None
-
-        func_values = [C_value, V_value, U_value]
-        sensitivities = [self.dCdrho_vec, self.dVdrho_vec_copy, self.dUdrho_vec]
+        func_values = [C_value, V_value]
+        sensitivities = [self.dCdrho_vec, self.dVdrho_vec_copy]
         return func_values, sensitivities

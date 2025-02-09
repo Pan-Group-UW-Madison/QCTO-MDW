@@ -58,7 +58,7 @@ class Problem:
             opts[key] = value
         opts.prefixPop()
         self.solver.setFromOptions()
-        for var in [self.lhs_mat, self.rhs_vec, self.l_vec]:
+        for var in [self.lhs_mat, self.rhs_vec]:
             if var is not None:
                 var.setOptionsPrefix(prefix)
                 var.setFromOptions()
@@ -68,25 +68,18 @@ class Problem:
         self.lhs_mat.zeroEntries()
         assemble_matrix(self.lhs_mat, self.lhs_form, bcs=self.bcs)
         self.lhs_mat.assemble()
-        if self.spring_vec is not None:
-            self.lhs_mat.setDiagonal(self.lhs_mat.getDiagonal()+self.spring_vec)
         self.solver.solve(self.rhs_vec, self.u_wrap)
         self.u_field.x.scatter_forward()
         
     def solve_adjoint(self):
         """Solve K*lambda=-L."""
-        self.solver.solve(-self.l_vec, self.lam_wrap)
-        self.lam.x.scatter_forward()
+        pass
         
     def __del__(self):
         self.solver.destroy()
         self.lhs_mat.destroy()
         self.rhs_vec.destroy()
         self.u_wrap.destroy()
-        # self.lam_wrap.destroy()
-        if self.spring_vec is not None:
-            self.spring_vec.destroy()
-            self.l_vec.destroy()
         
 class LinearElasticity(Problem):
     def __init__(self, descriptor):
@@ -178,11 +171,6 @@ class LinearElasticity(Problem):
         rhs = ufl.dot(b, self.v)*self.dx
         for marker, t in enumerate(tractions):
             rhs += ufl.dot(t, self.v)*self.ds(marker)
-        if descriptor["objective"] == "compliance":
-            self.spring_vec = self.l_vec = None
-        else:
-            self.spring_vec, self.l_vec = create_mechanism_vectors(
-                V, opt["in_spring"], opt["out_spring"])
         self.lhs_form = form(lhs)
         self.rhs_form = form(rhs)
             
@@ -242,10 +230,10 @@ class LinearElasticity(Problem):
         with dolfinx.io.XDMFFile(self.mesh.comm, self.prefix+self.problem_name+suffix+".xdmf", "w") as xdmf:
             xdmf.write_mesh(self.mesh)
             if self.interpolation == "discrete":
-                xdmf.write_function(self.u_field)
+                # xdmf.write_function(self.u_field)
                 xdmf.write_function(self.rho_field)
-                xdmf.write_function(self.sensitivity)
-                xdmf.write_function(self.rank)
+                # xdmf.write_function(self.sensitivity)
+                # xdmf.write_function(self.rank)
             else:
                 self.rho_phys_field.name = "density"
                 xdmf.write_function(self.rho_phys_field)
