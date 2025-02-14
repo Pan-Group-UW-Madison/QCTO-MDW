@@ -33,30 +33,34 @@ class Cluster():
         local_unique_size = np.array([len(local_unique_rho[i]) for i in range(unique_rho_value_global.size)])
         global_unique_size = self.comm.allreduce(local_unique_size)
         global_unique_size_offset = np.cumsum([0] + global_unique_size.tolist())
-        local_unique_size_offset = np.zeros((unique_rho_value_global.size, self.comm.size+1), dtype=int)
+        division_unique_size_offset_by_rank = np.zeros((unique_rho_value_global.size, self.comm.size+1), dtype=int)
         for i in range(unique_rho_value_global.size):
             unique_value_size = self.comm.allgather(local_unique_size[i])
-            local_unique_size_offset[i, :] = np.cumsum([0] + unique_value_size)
+            division_unique_size_offset_by_rank[i, :] = np.cumsum([0] + unique_value_size)
         
         offset = np.linspace(0, self.num_global_size, nD+1, dtype=int)
         
         self.offset_source = []
         self.offset_target = []
-        for i in range(unique_rho_value_local.size):
-            idx = np.where(rho_stacked == unique_rho_value_local[i])[0]
-            start_global_idx = global_unique_size_offset[i]+local_unique_size_offset[i, self.comm.rank]
-            end_global_idx = global_unique_size_offset[i]+local_unique_size_offset[i, self.comm.rank+1]
+        for i in range(len(local_unique_rho)):
+            idx = local_unique_rho[i]
+            if len(idx) == 0:
+                continue
+            start_global_idx = int(global_unique_size_offset[i]+division_unique_size_offset_by_rank[i, self.comm.rank])
+            end_global_idx = int(global_unique_size_offset[i]+division_unique_size_offset_by_rank[i, self.comm.rank] + local_unique_size[i])
             start_division_idx = int(np.searchsorted(offset, start_global_idx, side='left'))
             end_division_idx = int(np.searchsorted(offset, end_global_idx, side='left'))
             
+            if start_global_idx < offset[start_division_idx]:
+                start_division_idx -= 1
             idx_range = np.zeros((end_division_idx-start_division_idx+1), dtype=int)
             idx_range[0] = 0
             idx_range[-1] = len(idx)
             
-            for j in range(1, end_division_idx-start_division_idx):
-                idx_range[j] = min(offset[start_division_idx+j] - offset[start_division_idx], len(idx))
+            for j in range(1, idx_range.size-1):
+                idx_range[j] = min(offset[start_division_idx+j] - start_global_idx, len(idx))
             
-            for j in range(end_division_idx-start_division_idx):
+            for j in range(idx_range.size-1):
                 self.offset_source.append(start_division_idx+j)
                 self.offset_target.append(idx[idx_range[j]:idx_range[j+1]])
     
@@ -133,9 +137,17 @@ class DWOptimizer(SubOptimizer):
         else:
             n = len(obj)
         
-        self.lagrange_multiplier_list = []        
+        self.lagrange_multiplier_list = []
         self.rho_list = []
         self.cost_list = []
+        
+        check_milp_solution = False
+        
+        if check_milp_solution:
+            rho_milp, cost_milp, lagrange_multiplier_milp = self.milp_solution(rho[0], obj, weight[0], quantity, d)
+            if self.comm.rank == 0:
+                print(lagrange_multiplier_milp, flush=True)
+                print(self.dQdrho)
         
         nD = self.nD
         if n == 1:
@@ -437,8 +449,8 @@ class DWOptimizer(SubOptimizer):
                     # cut
                     model.setObjective(obj_func, gp.GRB.MINIMIZE)
                     # mass/volume constraint
-                    volume_coeff = np.ones(rho_size)
-                    volume_const = volume_coeff @ x - quantity*rho_size
+                    volume_coeff = np.ones(rho_size) / rho_size
+                    volume_const = volume_coeff @ x - quantity
                     model.addConstr(volume_const <= 0)
                     # trust region constraint
                     trust_region_coeff = 1 - 2*rho_global
