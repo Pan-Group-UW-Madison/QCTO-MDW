@@ -41,6 +41,15 @@ class Problem:
         
         self.objective = descriptor["objective"]
         
+        num_cells = self.mesh.topology.index_map(self.mesh.topology.dim).size_local
+        cell_tags = np.zeros(num_cells, dtype=np.int32)
+        self.materials = meshtags(self.mesh, self.mesh.topology.dim, np.zeros(num_cells, dtype=np.int32), cell_tags)
+        
+        self.solver = None
+        self.lhs_mat = None
+        self.rhs_vec = None
+        self.u_wrap = None
+        
     def set_solver(self, petsc_options):
         self.lhs_mat = create_matrix(self.lhs_form)
         self.rhs_vec = create_vector(self.rhs_form)
@@ -66,7 +75,11 @@ class Problem:
     def solve_prime(self):
         """Solve K*x=F."""
         self.lhs_mat.zeroEntries()
+        start = MPI.Wtime()
         assemble_matrix(self.lhs_mat, self.lhs_form, bcs=self.bcs)
+        end = MPI.Wtime()
+        if self.comm.rank == 0:
+            print(f"Assembly time: {end-start:.4f} s", flush=True)
         self.lhs_mat.assemble()
         self.solver.solve(self.rhs_vec, self.u_wrap)
         self.u_field.x.scatter_forward()
@@ -76,10 +89,11 @@ class Problem:
         pass
         
     def __del__(self):
-        self.solver.destroy()
-        self.lhs_mat.destroy()
-        self.rhs_vec.destroy()
-        self.u_wrap.destroy()
+        if self.solver is not None:
+            self.solver.destroy()
+            self.lhs_mat.destroy()
+            self.rhs_vec.destroy()
+            self.u_wrap.destroy()
         
 class LinearElasticity(Problem):
     def __init__(self, descriptor):
@@ -94,8 +108,7 @@ class LinearElasticity(Problem):
         self.u, self.v = ufl.TrialFunction(self.V), ufl.TestFunction(self.V)
         self.u_field = Function(self.V)
         self.u_field.name = "displacement"
-        self.rho_field = Function(self.S0)
-        self.rho_field.name = "density"
+        self.rho_field = []
         self.rank = Function(self.S0)
         self.rank.x.petsc_vec.set(self.comm.rank)
         self.rank.name = "rank"
@@ -117,18 +130,25 @@ class LinearElasticity(Problem):
             exit(1)
         if np.size(self.E_list, 0) > 1:
             if isinstance(descriptor["density"], (list, tuple)):
-                self.rho_list = np.array(descriptor["density"], dtype=np.float64)
+                self.density_list = np.array(descriptor["density"], dtype=np.float64)
             elif isinstance(descriptor["density"], np.ndarray):
-                self.rho_list = descriptor["density"]
+                self.density_list = descriptor["density"]
             elif descriptor["density"] is None:
                 raise ValueError("Density is not provided.")
                 exit(1)
             else:
                 raise ValueError("Density is not in the correct format.")
                 exit(1)
+        else:
+            self.density_list = np.array([1.0], dtype=np.float64)
         self.nu = descriptor["poisson's ratio"]
         
-        self.E0 = self.E_list[-1]
+        self.num_materials = np.size(self.E_list, 0)
+        
+        for i in range(self.num_materials):
+            self.rho_field.append(Function(self.S0))
+            self.rho_field[-1].name = f"material_{i}"
+        
         self.ν = self.nu
         
         if descriptor["interpolation"] == "discrete":
@@ -184,7 +204,11 @@ class LinearElasticity(Problem):
         self.f_int = ufl.inner(sigma(self.u_field), epsilon(self.v))*self.dx
         self.compliance = ufl.inner(sigma(self.u_field), epsilon(self.u_field))*self.dx
         if self.interpolation == "discrete":
-            self.volume = self.rho_field*self.dx
+            self.volume = 0
+            self.mass = 0
+            for i in range(self.num_materials):
+                self.volume += self.rho_field[i]*self.dx
+                self.mass += self.density_list[i]*self.rho_field[i]*self.dx            
         else:
             self.volume = self.rho_phys_field*self.dx
         self.total_volume = Constant(self.mesh, 1.0)*self.dx
@@ -192,7 +216,10 @@ class LinearElasticity(Problem):
     @property
     def E(self):
         if self.interpolation == "discrete":
-            return (self.eps + (1 - self.eps) * self.rho_field) * self.E0
+            val = self.eps * max(self.E_list)
+            for i in range(self.num_materials):
+                val += self.E_list[i] * self.rho_field[i]
+            return val
         else:
             return (self.eps + (1 - self.eps) * self.rho_phys_field**3) * self.E0
     
@@ -202,18 +229,6 @@ class LinearElasticity(Problem):
         
     def summary(self):
         if self.comm.rank == 0:
-            # print(bcolors.WARNING + "Problem name: ", self.problem_name + bcolors.ENDC)
-            # print("  Number of ranks: " + bcolors.OKBLUE, self.comm.size, bcolors.ENDC)
-            # if self.mesh.topology.dim == 2:
-            #     print("  Number of cells: " + bcolors.OKBLUE, self.mesh.topology.index_map(2).size_global, bcolors.ENDC)
-            #     print("  Number of vertices: " + bcolors.OKBLUE, self.mesh.topology.index_map(0).size_global, bcolors.ENDC)
-            #     print("  Number of dofs: " + bcolors.OKBLUE, 2*self.V.dofmap.index_map.size_global, bcolors.ENDC)
-            # elif self.mesh.topology.dim == 3:
-            #     print("  Number of cells: " + bcolors.OKBLUE, self.mesh.topology.index_map(3).size_global, bcolors.ENDC)
-            #     print("  Number of vertices: " + bcolors.OKBLUE, self.mesh.topology.index_map(0).size_global, bcolors.ENDC)
-            #     print("  Number of dofs: " + bcolors.OKBLUE, 3*self.V.dofmap.index_map.size_global, bcolors.ENDC)
-            # print("  Number of materials: " + bcolors.OKBLUE, np.size(self.E_list, 0), bcolors.ENDC, flush=True)
-            
             print("Problem name: ", self.problem_name)
             print("  Number of ranks: ", self.comm.size)
             if self.mesh.topology.dim == 2:
@@ -230,8 +245,9 @@ class LinearElasticity(Problem):
         with dolfinx.io.XDMFFile(self.mesh.comm, self.prefix+self.problem_name+suffix+".xdmf", "w") as xdmf:
             xdmf.write_mesh(self.mesh)
             if self.interpolation == "discrete":
-                # xdmf.write_function(self.u_field)
-                xdmf.write_function(self.rho_field)
+                xdmf.write_function(self.u_field)
+                for i in range(self.num_materials):
+                    xdmf.write_function(self.rho_field[i])
                 # xdmf.write_function(self.sensitivity)
                 # xdmf.write_function(self.rank)
             else:

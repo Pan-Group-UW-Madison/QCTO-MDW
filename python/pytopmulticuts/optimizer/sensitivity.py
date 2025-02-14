@@ -28,6 +28,7 @@ from petsc4py import PETSc
 class Sensitivity():
     def __init__(self, problem):
         self.comm = comm = MPI.COMM_WORLD
+        self.num_materials = len(problem.rho_field)
         # Compliance
         self.opt_compliance = problem.objective == "compliance"
         if self.opt_compliance:
@@ -35,8 +36,10 @@ class Sensitivity():
         if problem.interpolation == "continuous":
             self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_phys_field))
         else:
-            self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_field))
-        self.dCdrho_vec = create_vector(self.dCdrho_form)
+            self.dCdrho_form, self.dCdrho_vec = [], []
+            for i in range(self.num_materials):
+                self.dCdrho_form.append(form(-ufl.derivative(problem.compliance, problem.rho_field[i])))
+                self.dCdrho_vec.append(create_vector(self.dCdrho_form[-1]))
 
         # Volume
         self.total_volume = comm.allreduce(
@@ -45,24 +48,22 @@ class Sensitivity():
         if problem.interpolation == "continuous":
             dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_phys_field))
         else:
-            dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_field))
+            dVdrho_form = form(ufl.derivative(problem.volume, problem.rho_field[0]))
         self.dVdrho_vec = create_vector(dVdrho_form)
         assemble_vector(self.dVdrho_vec, dVdrho_form)
         self.dVdrho_vec.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
         self.dVdrho_vec /= self.total_volume
-
-        # Displacement
-        if not self.opt_compliance:
-            self.dfdrho_form = form(ufl.adjoint(ufl.derivative(problem.f_int, problem.rho_phys_field)))
-            self.dfdrho_mat = create_matrix(self.dfdrho_form)
-            self.problem = problem
-            self.u_field, self.lambda_field = u_field, lambda_field
-            self.dUdrho_vec = problem.rho_phys_field.x.petsc_vec.copy()
-            self.prod_vec = u_field.x.petsc_vec.copy()
-
-    def __del__(self):
-        if not self.opt_compliance:
-            self.prod_vec.destroy()
+        
+        # Mass
+        if self.num_materials > 1:
+            self.M_form = form(problem.mass)
+            self.dMdrho_vec = []
+            for i in range(self.num_materials):
+                dMdrho_form = form(ufl.derivative(problem.mass, problem.rho_field[i]))
+                dMdrho_vec = create_vector(dMdrho_form)
+                assemble_vector(dMdrho_vec, dMdrho_form)
+                dMdrho_vec.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+                self.dMdrho_vec.append(dMdrho_vec)
 
     def evaluate(self):
         # Compliance
@@ -71,14 +72,21 @@ class Sensitivity():
         else:
             self.problem.lhs_mat.mult(self.u_field.x.petsc_vec, self.prod_vec)
             C_value = self.u_field.x.petsc_vec.dot(self.prod_vec)
-        with self.dCdrho_vec.localForm() as loc:
-            loc.set(0)
-        assemble_vector(self.dCdrho_vec, self.dCdrho_form)
-        self.dCdrho_vec.ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
-        actual_volume = self.comm.allreduce(assemble_scalar(self.V_form), op=MPI.SUM)
-        V_value = actual_volume / self.total_volume
-        self.dVdrho_vec_copy = self.dVdrho_vec.copy()
+        for i in range(self.num_materials):
+            assemble_vector(self.dCdrho_vec[i], self.dCdrho_form[i])
+            self.dCdrho_vec[i].ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
+        
+        if self.num_materials > 1:
+            quantity = self.comm.allreduce(assemble_scalar(self.M_form), op=MPI.SUM)
+        else:
+            quantity = self.comm.allreduce(assemble_scalar(self.V_form), op=MPI.SUM) / self.total_volume
 
-        func_values = [C_value, V_value]
-        sensitivities = [self.dCdrho_vec, self.dVdrho_vec_copy]
+        func_values = [C_value, quantity]
+        sensitivities = self.dCdrho_vec.copy()
         return func_values, sensitivities
+
+    def evaluate_quantity(self):
+        if self.num_materials > 1:
+            return self.dMdrho_vec
+        else:
+            return [self.dVdrho_vec]

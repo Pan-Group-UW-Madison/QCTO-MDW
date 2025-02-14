@@ -10,6 +10,7 @@ import numpy as np
 import math
 from itertools import combinations
 from mpi4py import MPI
+from petsc4py import PETSc
 
 class Cuts:
     def __init__(self):
@@ -112,30 +113,70 @@ class MulticutsOptimizer(Optimizer):
         
         self.max_iter = descriptor["max_iter"]
         self.opt_tol = descriptor["opt_tol"]
-        self.vol_frac = descriptor["vol_frac"]
         self.radius = descriptor["filter_radius"]
         self.d = descriptor["initial_trust_region"]
+        
+        # initialize vol/mass
+        if "vol_frac" in descriptor:
+            target_quantity = descriptor["vol_frac"]
+        if "mass" in descriptor:
+            self.mass = descriptor["mass"]
+        if "initial_vol_frac" in descriptor:
+            self.initial_vol_frac = descriptor["initial_vol_frac"]
+        else:
+            self.initial_vol_frac = None
+        if "initial_mass" in descriptor:
+            self.initial_mass = descriptor["initial_mass"]
+        else:
+            self.initial_mass = None
+        if "num_stages" in descriptor:
+            self.num_stages = descriptor["num_stages"]
+        else:
+            self.num_stages = 1
+        
+        self.min_eps_factor = 1e-4
         
         self.verbose = 1
         
         num_consts = 1 if self.problem.objective == "compliance" else 2
         
-        rho_field = self.problem.rho_field
-        num_elems = rho_field.x.petsc_vec.array.size
-        centers = rho_field.function_space.tabulate_dof_coordinates()[:num_elems].T
-        solid, void = descriptor["solid_zone"](centers), descriptor["void_zone"](centers)
-        rho_ini = np.full(num_elems, descriptor["vol_frac"])
-        rho_ini[solid], rho_ini[void] = 1.0, 1e-4
-        rho_field.x.petsc_vec.array[:] = rho_ini
+        num_elems = self.problem.rho_field[0].x.petsc_vec.array.size
+        centers = self.problem.rho_field[0].function_space.tabulate_dof_coordinates()[:num_elems].T        
+        if self.problem.num_materials == 1:
+            solid, void = [descriptor["solid_zone"](centers)], [descriptor["void_zone"](centers)]
+            self.quantity_constraint = descriptor["vol_frac"]
+            if self.initial_vol_frac is None:
+                self.initial_quantity_constraint = self.quantity_constraint
+            else:
+                self.initial_quantity_constraint = self.initial_vol_frac
+        else:
+            if not isinstance(descriptor["solid_zone"], list) or not isinstance(descriptor["void_zone"], list):
+                raise ValueError("Invalid solid_zone or void_zone")
+                exit(1)
+            solid = []
+            void = []
+            for i in range(self.problem.num_materials):
+                solid.append(descriptor["solid_zone"][i](centers))
+                void.append(descriptor["void_zone"][i](centers))
+            
+            self.quantity_constraint = descriptor["mass"]
+            if self.initial_mass is None:
+                self.initial_quantity_constraint = self.quantity_constraint
+            else:
+                self.initial_quantity_constraint = self.initial_mass
         
-        self.free = np.where((solid == False) & (void == False))
-        self.num_free = len(self.free[0])
-        
-        num_fixed = num_elems - self.num_free
-        num_fixed_global = self.comm.allreduce(num_fixed, op=MPI.SUM)
-        num_elems_global = self.comm.allreduce(num_elems, op=MPI.SUM)
-        
-        self.vol_frac -= num_fixed_global / num_elems_global
+        self.free = np.where((solid[0] == False) & (void[0] == False))[0]
+        self.num_free = len(self.free)
+        for i in range(self.problem.num_materials):
+            rho_ini = np.zeros(num_elems)
+            rho_ini[solid[i]] = 1.0
+            
+            free = np.where((solid[i] == False) & (void[i] == False))
+            if np.linalg.norm(free[0] - self.free) > 1e-6:
+                raise ValueError("Invalid solid_zone or void_zone")
+                exit(1)
+            
+            self.problem.rho_field[i].x.petsc_vec.array = rho_ini.copy()
         
         self.num_fem = 0
         
@@ -144,7 +185,7 @@ class MulticutsOptimizer(Optimizer):
         if descriptor["subproblem_solver"] == "milp":
             self.sub_optimizer = MilpOptimizer(problem)
         elif descriptor["subproblem_solver"] == "dw":
-            self.sub_optimizer = DWOptimizer(problem, self.num_free, num_elems, descriptor["num_divisions"], descriptor["solver_type"])
+            self.sub_optimizer = DWOptimizer(problem, self.num_free, num_elems, self.problem.num_materials, descriptor["num_divisions"], descriptor["solver_type"])
         else:
             raise ValueError("Invalid subproblem_solver")
             exit(1)
@@ -152,20 +193,30 @@ class MulticutsOptimizer(Optimizer):
     def solve_prime(self):
         self.problem.solve_prime()
         
-        [C_value, V_value, U_value], [dCdrho, dVdrho, dUdrho] = self.sens_problem.evaluate()
-        if self.problem.objective == "compliance":
-            dJdrho = dCdrho
-        else:
-            dJdrho = dUdrho
+        [J, quantity], dJdrho = self.sens_problem.evaluate()
         
-        dJdrho = dJdrho.array * (self.problem.rho_field.x.petsc_vec.array + self.problem.eps.value)
-        dJdrho = self.sens_filter.filter(dJdrho)
+        dJdrho[0] = dJdrho[0].array * (self.problem.rho_field[0].x.petsc_vec.array + self.problem.eps.value)
+        dJdrho[0] = self.sens_filter.filter(dJdrho[0])
         
-        self.problem.sensitivity.x.petsc_vec.array = dJdrho.copy()
+        # rho = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
+        # rho_mask = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
+        # for i in range(self.problem.num_materials):
+        #     rho += self.problem.rho_field[i].x.petsc_vec.array.copy()
+        #     rho_mask += self.problem.rho_field[i].x.petsc_vec.array.copy()
+        # rho_mask[rho_mask > 0] = 1.0
+        # rho[rho == 0] = self.problem.eps.value
+        
+        # for i in range(self.problem.num_materials):
+        #     rho_filter = np.ones(self.problem.rho_field[0].x.petsc_vec.array.size) * self.problem.eps.value
+        #     rho_filter[self.problem.rho_field[i].x.petsc_vec.array > 0] = self.problem.rho_field[i].x.petsc_vec.array[self.problem.rho_field[i].x.petsc_vec.array > 0]
+        #     rho_filter[self.problem.rho_field[i].x.petsc_vec.array == 0] = rho[self.problem.rho_field[i].x.petsc_vec.array == 0]
+        #     rho_filter[rho_mask == 0] = rho[rho_mask == 0]
+        #     dJdrho[i] = dJdrho[i].array * rho_filter
+        #     dJdrho[i] = self.sens_filter.filter(dJdrho[i])
         
         self.num_fem += 1
             
-        return C_value, V_value, dJdrho
+        return J, quantity, dJdrho
     
     def update_trust_region(self, c0, c, cost, d):
         omega = (c0 - c) / (c0 - cost)
@@ -190,78 +241,119 @@ class MulticutsOptimizer(Optimizer):
         
         self.num_iter = 0
         
-        vol_frac_list = [self.vol_frac]
-        if self.problem.mesh.topology.dim == 3:
-            if self.vol_frac < 0.2:
-                n = 7
-                A = -(n - 1) / math.log(self.vol_frac / 0.3)
-                vol_frac_list = np.exp(-np.arange(n) / A) * 0.3
-                vol_frac_list = np.round(vol_frac_list, decimals=4)
-                vol_frac_list = np.append(vol_frac_list, self.vol_frac)
-                vol_frac_list = np.append(vol_frac_list, self.vol_frac)
-                eps_list = np.ones(n+2) * 1e-2
-                eps_list[-2] = 1e-3
-                eps_list[-1] = 1e-4
-            else:
-                vol_frac_list = [self.vol_frac, self.vol_frac]
-                eps_list = np.array([1e-2, 1e-4])
+        if self.num_stages > 1:
+            n = self.num_stages
+            A = -(n - 1) / math.log(self.quantity_constraint / self.initial_quantity_constraint)
+            quantity_constraint_list = np.exp(-np.arange(n) / A) * self.initial_quantity_constraint
+            quantity_constraint_list = np.round(quantity_constraint_list, decimals=4)
+            quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
+            quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
+        else:
+            quantity_constraint_list = np.ones(self.num_stages+2, dtype=float) * self.quantity_constraint
         
-        self.problem.rho_field.x.petsc_vec.array[self.free] = vol_frac_list[0]
+        eps_list = np.ones(self.num_stages+2, dtype=float) * 1e-2
+        eps_list[-2] = 1e-3
+        eps_list[-1] = 1e-4
+        
+        quantity_local_offset = 0.0
+        dQdrho = self.sens_problem.evaluate_quantity()
+        free_quantity_local = np.zeros(self.problem.num_materials)
+        for i in range(self.problem.num_materials):
+            quantity_local_offset += np.dot(dQdrho[i].array, self.problem.rho_field[i].x.petsc_vec.array)
+            free_quantity_local[i] = np.sum(dQdrho[i].array[self.free])
+        quantity_constraint_offset = self.comm.allreduce(quantity_local_offset, op=MPI.SUM)
+        free_quantity = np.array(self.comm.allreduce(free_quantity_local, op=MPI.SUM))
+        
+        total_free_quantity = np.sum(free_quantity)
+        allowable_quantity = quantity_constraint_list[0] - quantity_constraint_offset
+        initial_quantity = allowable_quantity / total_free_quantity
+        for i in range(self.problem.num_materials):
+            self.problem.rho_field[i].x.petsc_vec.array[self.free] = initial_quantity
+        
+        for i in range(self.problem.num_materials):
+            dQdrho[i] = dQdrho[i].array[self.free]
+        self.sub_optimizer.set_dQdrho(dQdrho)
         
         self.stage = 0
         
-        while self.stage < len(vol_frac_list) and self.num_fem < self.max_iter:
+        while self.stage < self.num_stages and self.num_fem < self.max_iter:
             if self.comm.rank == 0:
-                print(f"Stage: {self.stage}, Vol frac: {vol_frac_list[self.stage]:.4f}", flush=True)
-            self.vol_frac = vol_frac_list[self.stage]
+                if self.problem.num_materials == 1:
+                    print(f"Stage: {self.stage}, Vol frac: {quantity_constraint_list[self.stage]:.4f}", flush=True)
+                else:
+                    print(f"Stage: {self.stage}, Mass: {quantity_constraint_list[self.stage]:.4f}", flush=True)
+            target_quantity = quantity_constraint_list[self.stage] - quantity_constraint_offset
             self.problem.eps.value = eps_list[self.stage]
+        
             # jump start
-            if self.stage == 0 or self.stage == len(vol_frac_list) - 1:
+            if self.stage == 0 or self.stage >= self.num_stages:
                 fem_sen_time = time.perf_counter()
-                C_value, V_value, dJdrho = self.solve_prime()
+                J, quantity, dJdrho = self.solve_prime()
                 fem_sen_time = time.perf_counter() - fem_sen_time
                 self.analysis_time += fem_sen_time
                 
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
+                rho_values, sens = [], []
+                for i in range(self.problem.num_materials):
+                    rho_values.append(self.problem.rho_field[i].x.petsc_vec.array[self.free].copy())
+                    sens.append(dJdrho[i][self.free].copy())
                 if self.stage == 0:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, 1.0)
+                    rho_new, cost = self.multi_cuts(rho_values, J, sens, target_quantity, 1.0)
                 else:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
+                    rho_new, cost = self.multi_cuts(rho_values, J, sens, target_quantity, self.d)
+                for i in range(self.problem.num_materials):
+                    self.problem.rho_field[i].x.petsc_vec.array[self.free] = rho_new[i].copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
                 if self.comm.rank == 0 and self.verbose > 0:
-                    print(f"Iter: {self.num_iter:3d}, "\
-                        f"analysis time: {fem_sen_time:9.4f} s, "\
-                        f"optimization time: {opt_time:9.4f} s, "\
-                        f"C: {C_value:6.3f}, Cost: {cost:8.4f}, "\
-                        f"V: {V_value:4.3f}", \
-                        flush=True)
+                    if self.problem.num_materials == 1:
+                        print(f"Iter: {self.num_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"V: {quantity:4.3f}", \
+                            flush=True)
+                    else:
+                        print(f"Iter: {self.num_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"M: {quantity:4.3f}", \
+                            flush=True)
                 
                 self.cuts.clear()
                 upper_bound = math.inf
                 rho_optimal = None
             else:
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
-                if self.stage == 0:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, 1.0)
-                else:
-                    rho_new, cost = self.multi_cuts(rho_values, C_value, dJdrho[self.free], self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
+                rho_values, sens = [], []
+                for i in range(self.problem.num_materials):
+                    rho_values.append(self.problem.rho_field[i].x.petsc_vec.array[self.free].copy())
+                    sens.append(dJdrho[i][self.free].copy())
+                rho_new, cost = self.multi_cuts(rho_values, J, sens, target_quantity, self.d)
+                for i in range(self.problem.num_materials):
+                    self.problem.rho_field[i].x.petsc_vec.array[self.free] = rho_new[i].copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
                 self.cuts.clear()
                 
                 if self.comm.rank == 0 and self.verbose > 0:
-                    print(f"Iter: {self.num_iter:3d}, "\
-                        f"optimization time: {opt_time:9.4f} s, "\
-                        f"C: {C_value:6.3f}, Cost: {cost:8.4f}, "\
-                        f"V: {V_value:4.3f}", \
-                        flush=True)
+                    if self.num_materials == 1:
+                        print(f"Iter: {self.num_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"V: {quantity:4.3f}", \
+                            flush=True)
+                    else:
+                        print(f"Iter: {self.num_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"M: {quantity:4.3f}", \
+                            flush=True)
                 
                 upper_bound = math.inf
                 rho_optimal = None
@@ -273,50 +365,65 @@ class MulticutsOptimizer(Optimizer):
                 num_inner_iter += 1
                 
                 fem_sen_time = time.perf_counter()
-                C_value, V_value, dJdrho = self.solve_prime()
+                J, V_value, dJdrho = self.solve_prime()
                 fem_sen_time = time.perf_counter() - fem_sen_time
                 self.analysis_time += fem_sen_time
                 
                 # adjust trust region according to the merit function
                 if num_inner_iter > 1:
-                    self.d = self.update_trust_region(old_c, C_value, cost, self.d)
+                    self.d = self.update_trust_region(old_c, J, cost, self.d)
                 
                 # stack the cuts
                 if num_inner_iter == 1:
-                    c = C_value
+                    c = J
                     old_c = c
                 else:
                     old_c = c
-                    c = C_value
-                sens = dJdrho.copy()
+                    c = J
                 
                 # stop condition
-                condition1 = abs(C_value - upper_bound) / abs(upper_bound) < self.opt_tol
-                condition2 = abs(C_value - cost) / abs(upper_bound) < self.opt_tol
-                condition3 = (C_value > upper_bound) and (cost > upper_bound)
+                condition1 = abs(J - upper_bound) / abs(upper_bound) < self.opt_tol
+                condition2 = abs(J - cost) / abs(upper_bound) < self.opt_tol
+                condition3 = (J > upper_bound) and (cost > upper_bound)
                 
                 # branch over the cuts
                 opt_time = time.perf_counter()
-                rho_values = self.problem.rho_field.x.petsc_vec.array[self.free].copy()
-                rho_new, cost = self.multi_cuts(rho_values, c, sens[self.free], self.vol_frac, self.d)
-                self.problem.rho_field.x.petsc_vec.array[self.free] = rho_new.copy()
+                rho_values, sens = [], []
+                for i in range(self.problem.num_materials):
+                    rho_values.append(self.problem.rho_field[i].x.petsc_vec.array[self.free].copy())
+                    sens.append(dJdrho[i][self.free].copy())
+                rho_new, cost = self.multi_cuts(rho_values, c, sens, target_quantity, self.d)
+                for i in range(self.problem.num_materials):
+                    self.problem.rho_field[i].x.petsc_vec.array[self.free] = rho_new[i].copy()
                 opt_time = time.perf_counter() - opt_time
                 self.optimization_time += opt_time
                 
                 if self.comm.rank == 0 and self.verbose > 0:
-                    print(f"Iter: {self.num_iter+num_inner_iter:3d}, "\
-                        f"analysis time: {fem_sen_time:9.4f} s, "\
-                        f"optimization time: {opt_time:9.4f} s, "\
-                        f"C: {C_value:6.3f}, Cost: {cost:8.4f}, "\
-                        f"Upper: {upper_bound:6.3f}, ", \
-                        f"V: {V_value:4.3f}, ", \
-                        f"Trust region: {self.d:4.3f}, ", \
-                        f"Con1: {abs(C_value - upper_bound) / abs(upper_bound):5.3f}, ", \
-                        f"Con2: {abs(C_value - cost) / abs(upper_bound):5.3f}", \
-                        flush=True)
+                    if self.problem.num_materials == 1:
+                        print(f"Iter: {self.num_iter+num_inner_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"Upper: {upper_bound:6.3f}, ", \
+                            f"V: {V_value:4.3f}, ", \
+                            f"Trust region: {self.d:4.3f}, ", \
+                            f"Con1: {abs(J - upper_bound) / abs(upper_bound):5.3f}, ", \
+                            f"Con2: {abs(J - cost) / abs(upper_bound):5.3f}", \
+                            flush=True)
+                    else:
+                        print(f"Iter: {self.num_iter+num_inner_iter:3d}, "\
+                            f"analysis time: {fem_sen_time:9.4f} s, "\
+                            f"optimization time: {opt_time:9.4f} s, "\
+                            f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
+                            f"Upper: {upper_bound:6.3f}, ", \
+                            f"M: {quantity:4.3f}, ", \
+                            f"Trust region: {self.d:4.3f}, ", \
+                            f"Con1: {abs(J - upper_bound) / abs(upper_bound):5.3f}, ", \
+                            f"Con2: {abs(J - cost) / abs(upper_bound):5.3f}", \
+                            flush=True)
                 
-                if upper_bound > C_value:
-                    upper_bound = C_value
+                if upper_bound > J:
+                    upper_bound = J
                     rho_optimal = rho_values.copy()
                     weight_optimal = dJdrho.copy()
                     d_optimal = self.d
@@ -324,25 +431,29 @@ class MulticutsOptimizer(Optimizer):
                 else:
                     stack_ite += 1
                 
-                if (condition1 and condition2) or condition3 or stack_ite > 3:
+                if (condition1 and condition2) or stack_ite > 3:
                     break
+                
+                # self.problem.save_results("_" + str(self.stage) + "_" + str(num_inner_iter))
             
             self.stage += 1
             
-            self.problem.rho_field.x.petsc_vec.array[self.free] = rho_optimal.copy()
+            self.problem.rho_field[0].x.petsc_vec.array[self.free] = rho_optimal.copy()
             
             self.num_iter += num_inner_iter
             
-            if self.stage < len(vol_frac_list):
+            if self.stage < self.num_stages + 2:
                 rho_values = rho_optimal
-                C_value = upper_bound
+                J = upper_bound
                 dJdrho = weight_optimal.copy()
-                self.d = max(vol_frac_list[self.stage - 1] - vol_frac_list[self.stage] + 5e-3, d_optimal)
+                self.d = max(quantity_constraint_list[self.stage - 1] - quantity_constraint_list[self.stage] + 5e-3, d_optimal)
                 
                 if self.comm.rank == 0:
                     print("\n", flush=True)
             
             self.cuts.clear()
+            
+            self.problem.save_results("_" + str(self.stage))
         
         self.running_time = time.perf_counter() - running_timer
         super().summary()
