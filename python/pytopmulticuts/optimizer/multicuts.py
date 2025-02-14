@@ -152,7 +152,7 @@ class MulticutsOptimizer(Optimizer):
     def solve_prime(self):
         self.problem.solve_prime()
         
-        [C_value, V_value, U_value], [dCdrho, dVdrho, dUdrho] = self.sens_problem.evaluate()
+        [C_value, V_value], [dCdrho, dVdrho] = self.sens_problem.evaluate()
         if self.problem.objective == "compliance":
             dJdrho = dCdrho
         else:
