@@ -18,12 +18,17 @@ Reference:
   https://doi.org/10.1007/s00158-024-03818-7
 """
 
+'''
+Modified by:
+- Zisheng Ye (ye57@wisc.edu)
+- Wenxiao Pan (wpan9@wisc.edu)
+'''
+
 import ufl
 from mpi4py import MPI
 from dolfinx.fem import form, assemble_scalar
 from dolfinx.fem.petsc import create_vector, create_matrix, assemble_vector, assemble_matrix
 from petsc4py import PETSc
-
 
 class Sensitivity():
     def __init__(self, problem):
@@ -32,13 +37,13 @@ class Sensitivity():
         # Compliance
         self.opt_compliance = problem.objective == "compliance"
         if self.opt_compliance:
-            self.C_form = form(problem.compliance)
+            self.C_form = form(problem.J)
         if problem.interpolation == "continuous":
-            self.dCdrho_form = form(-ufl.derivative(problem.compliance, problem.rho_phys_field))
+            self.dCdrho_form = form(-ufl.derivative(problem.J, problem.rho_phys_field))
         else:
             self.dCdrho_form, self.dCdrho_vec = [], []
             for i in range(self.num_materials):
-                self.dCdrho_form.append(form(-ufl.derivative(problem.compliance, problem.rho_field[i])))
+                self.dCdrho_form.append(form(-ufl.derivative(problem.J, problem.rho_field[i])))
                 self.dCdrho_vec.append(create_vector(self.dCdrho_form[-1]))
 
         # Volume
@@ -73,6 +78,8 @@ class Sensitivity():
             self.problem.lhs_mat.mult(self.u_field.x.petsc_vec, self.prod_vec)
             C_value = self.u_field.x.petsc_vec.dot(self.prod_vec)
         for i in range(self.num_materials):
+            with self.dCdrho_vec[i].localForm() as loc:
+                loc.set(0)
             assemble_vector(self.dCdrho_vec[i], self.dCdrho_form[i])
             self.dCdrho_vec[i].ghostUpdate(addv=PETSc.InsertMode.ADD, mode=PETSc.ScatterMode.REVERSE)
         

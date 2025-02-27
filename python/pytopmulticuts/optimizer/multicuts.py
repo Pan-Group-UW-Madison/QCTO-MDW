@@ -200,25 +200,19 @@ class MulticutsOptimizer(Optimizer):
         rho_mask = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
         for i in range(self.problem.num_materials):
             rho += self.problem.rho_field[i].x.petsc_vec.array.copy() * self.problem.E_list[i]
-            rho_mask += self.problem.rho_field[i].x.petsc_vec.array.copy()
-        rho_mask[rho_mask > 0] = 1.0
-        rho[rho == 0] = self.problem.eps.value * E_max
+            rho_mask += self.problem.rho_field[i].x.petsc_vec.array.copy() * (i+1)
         
         for i in range(self.problem.num_materials):
             rho_filter = self.problem.rho_field[i].x.petsc_vec.array.copy()
-            # rho_filter[self.problem.rho_field[i].x.petsc_vec.array > 0] = self.problem.rho_field[i].x.petsc_vec.array[self.problem.rho_field[i].x.petsc_vec.array > 0]
-            rho_filter[self.problem.rho_field[i].x.petsc_vec.array == 0] = rho[self.problem.rho_field[i].x.petsc_vec.array == 0] / E_max
-            rho_filter[rho_mask == 0] = rho[rho_mask == 0] / (self.problem.E_list[i] - self.problem.eps.value * E_max)
-            dJdrho[i] = dJdrho[i].array * rho_filter
+            rho_filter[self.problem.rho_field[i].x.petsc_vec.array == 0] = \
+                2 * rho[self.problem.rho_field[i].x.petsc_vec.array == 0] / \
+                    (self.problem.E_list[i] + rho[self.problem.rho_field[i].x.petsc_vec.array == 0])
+            rho_filter[rho_mask < 1e-3] = self.problem.eps.value * E_max / self.problem.E_list[i]
+            dJdrho[i] = dJdrho[i].array.copy() * rho_filter
             dJdrho[i] = self.sens_filter.filter(dJdrho[i])
         
-        if self.comm.rank == 0:
-            for i in range(dJdrho[0].size):
-                if rho[i] > 0:
-                    print(dJdrho[0][i] / self.problem.density_list[0], \
-                        dJdrho[1][i] / self.problem.density_list[1], \
-                        dJdrho[2][i] / self.problem.density_list[2],flush=True)
-                    break
+        for i in range(self.problem.num_materials):
+            self.problem.sensitivity[i].x.petsc_vec.array = dJdrho[i]
         
         self.num_fem += 1
             
@@ -227,10 +221,10 @@ class MulticutsOptimizer(Optimizer):
     def update_trust_region(self, c0, c, cost, d):
         omega = (c0 - c) / (c0 - cost)
         if omega < 0.2 and omega >= 0:
-            factor = max(0.75 * d, 1e-3)
+            factor = max(0.75 * d, 0.1)
         elif omega < 0:
-            factor = max(0.5 * d, 1e-3)
-        elif omega > 1:
+            factor = max(0.5 * d, 0.1)
+        elif omega > 0.5:
             factor = min(1.5 * d, 1.0)
         else:
             factor = d

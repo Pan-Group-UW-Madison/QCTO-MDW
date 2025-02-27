@@ -1,3 +1,29 @@
+"""
+Authors:
+- Yingqi Jia (yingqij2@illinois.edu)
+- Chao Wang (chaow4@illinois.edu)
+- Xiaojia Shelly Zhang (zhangxs@illinois.edu)
+
+Sponsors:
+- U.S. National Science Foundation (NSF) EAGER Award CMMI-2127134
+- U.S. Defense Advanced Research Projects Agency (DARPA) Young Faculty Award
+  (N660012314013)
+- NSF CAREER Award CMMI-2047692
+- NSF Award CMMI-2245251
+
+Reference:
+- Jia, Y., Wang, C. & Zhang, X.S. FEniTop: a simple FEniCSx implementation
+  for 2D and 3D topology optimization supporting parallel computing.
+  Struct Multidisc Optim 67, 140 (2024).
+  https://doi.org/10.1007/s00158-024-03818-7
+"""
+
+'''
+Modified by:
+- Zisheng Ye (ye57@wisc.edu)
+- Wenxiao Pan (wpan9@wisc.edu)
+'''
+
 import numpy as np
 import ufl
 from dolfinx.mesh import locate_entities_boundary, meshtags
@@ -109,11 +135,12 @@ class LinearElasticity(Problem):
         self.u_field = Function(self.V)
         self.u_field.name = "displacement"
         self.rho_field = []
+        self.material = Function(self.S0)
+        self.material.name = "material"
         self.rank = Function(self.S0)
         self.rank.x.petsc_vec.set(self.comm.rank)
         self.rank.name = "rank"
-        self.sensitivity = Function(self.S0)
-        self.sensitivity.name = "sensitivity"
+        self.sensitivity = []
         
         if descriptor["interpolation"] == "continuous":
             self.S = functionspace(self.mesh, ("CG", 1))
@@ -148,6 +175,8 @@ class LinearElasticity(Problem):
         for i in range(self.num_materials):
             self.rho_field.append(Function(self.S0))
             self.rho_field[-1].name = f"material_{i}"
+            self.sensitivity.append(Function(self.S0))
+            self.sensitivity[-1].name = f"sensitivity_{i}"
         
         self.ν = self.nu
         
@@ -201,8 +230,26 @@ class LinearElasticity(Problem):
         set_bc(self.rhs_vec, self.bcs)        
         
         # Define optimization-related variables
-        self.f_int = ufl.inner(sigma(self.u_field), epsilon(self.v))*self.dx
-        self.compliance = ufl.inner(sigma(self.u_field), epsilon(self.u_field))*self.dx
+        # - minimize compliance
+        # - minimize target displacement
+        if self.objective == "compliance":
+            self.J = ufl.inner(sigma(self.u_field), epsilon(self.u_field))*self.dx
+        if self.objective == "target displacement":
+            if isinstance(descriptor["target displacement"], (list, tuple)):
+                if isinstance(descriptor["target displacement"][0], (list, tuple)):
+                    for target in enumerate(descriptor["target displacement"]):
+                        target_disp, location = target[0], target[1]
+                        facets = locate_entities_boundary(self.mesh, self.dim-1, location)
+                else:
+                    target_disp_func, location = descriptor["target displacement"][0], descriptor["target displacement"][1]
+                    target_disp = Function(self.V).sub(2)
+                    target_disp.interpolate(target_disp_func)
+                    facets = locate_entities_boundary(self.mesh, self.dim-1, location)
+                    target_dofs = np.unique(self.mesh.topology.connectivity(self.mesh.topology.dim - 1, 0).array[facets])
+                    d_target = ufl.Measure("ds", domain=self.mesh, subdomain_data=facets)
+            
+            self.J = ufl.inner(self.u_field.sub(2) - target_disp, self.u_field.sub(2) - target_disp) * d_target
+            
         if self.interpolation == "discrete":
             self.volume = 0
             self.mass = 0
@@ -216,9 +263,10 @@ class LinearElasticity(Problem):
     @property
     def E(self):
         if self.interpolation == "discrete":
+            base_E = self.eps * max(self.E_list)
             val = self.eps * max(self.E_list)
             for i in range(self.num_materials):
-                val += self.E_list[i] * self.rho_field[i]
+                val += (self.E_list[i] - self.eps * max(self.E_list)) * self.rho_field[i]
             return val
         else:
             return (self.eps + (1 - self.eps) * self.rho_phys_field**3) * self.E0
@@ -246,9 +294,13 @@ class LinearElasticity(Problem):
             xdmf.write_mesh(self.mesh)
             if self.interpolation == "discrete":
                 xdmf.write_function(self.u_field)
+                self.material.x.petsc_vec.set(0)
                 for i in range(self.num_materials):
-                    xdmf.write_function(self.rho_field[i])
-                # xdmf.write_function(self.sensitivity)
+                    self.material.x.petsc_vec.array += self.rho_field[i].x.petsc_vec.array * (i+1)
+                xdmf.write_function(self.material)
+                
+                # for i in range(self.num_materials):
+                #     xdmf.write_function(self.sensitivity[i])
                 # xdmf.write_function(self.rank)
             else:
                 self.rho_phys_field.name = "density"
