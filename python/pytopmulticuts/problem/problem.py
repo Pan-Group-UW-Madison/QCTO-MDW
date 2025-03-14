@@ -54,10 +54,10 @@ class Problem:
         else:
             self.prefix = descriptor["prefix"]
             
-        if descriptor["problem_name"] is None:
+        if descriptor["problem name"] is None:
             self.problem_name = "problem"
         else:
-            self.problem_name = descriptor["problem_name"]
+            self.problem_name = descriptor["problem name"]
         
         self.comm = self.mesh.comm
         
@@ -125,7 +125,7 @@ class LinearElasticity(Problem):
     def __init__(self, descriptor):
         super().__init__(descriptor)
         
-        if descriptor["problem_name"] is None:
+        if descriptor["problem name"] is None:
             self.problem_name = "linear_elasticity"
         
         self.dim = self.mesh.topology.dim            
@@ -168,17 +168,34 @@ class LinearElasticity(Problem):
                 exit(1)
         else:
             self.density_list = np.array([1.0], dtype=np.float64)
-        self.nu = descriptor["poisson's ratio"]
         
         self.num_materials = np.size(self.E_list, 0)
+        
+        if isinstance(descriptor["poisson's ratio"], (int, float)):
+            if self.num_materials > 1:
+                raise ValueError("Poisson's ratio is not provided for each material.")
+                exit(1)
+            else:
+                self.nu_list = np.array(descriptor["poisson's ratio"], dtype=np.float64)
+        elif isinstance(descriptor["poisson's ratio"], (list, tuple)):
+            self.nu_list = np.array(descriptor["poisson's ratio"], dtype=np.float64)
+            if np.size(self.nu_list, 0) != self.num_materials:
+                raise ValueError("Poisson's ratio is not provided for each material.")
+                exit(1)
+        elif isinstance(descriptor["poisson's ratio"], np.ndarray):
+            self.nu_list = descriptor["poisson's ratio"]
+            if np.size(self.nu_list, 0) != self.num_materials:
+                raise ValueError("Poisson's ratio is not provided for each material.")
+                exit(1)
+        else:
+            raise ValueError("Poisson's ratio is not in the correct format.")
+            exit(1)
         
         for i in range(self.num_materials):
             self.rho_field.append(Function(self.S0))
             self.rho_field[-1].name = f"material_{i}"
             self.sensitivity.append(Function(self.S0))
             self.sensitivity[-1].name = f"sensitivity_{i}"
-        
-        self.ν = self.nu
         
         if descriptor["interpolation"] == "discrete":
             self.interpolation = "discrete"
@@ -269,7 +286,19 @@ class LinearElasticity(Problem):
                 val += (self.E_list[i] - self.eps * max(self.E_list)) * self.rho_field[i]
             return val
         else:
-            return (self.eps + (1 - self.eps) * self.rho_phys_field**3) * self.E0
+            return (self.eps + (1 - self.eps) * self.rho_phys_field**3) * self.E_list[0]
+    
+    @property
+    def ν(self):
+        if self.interpolation == "discrete":
+            val = 0
+            for i in range(self.num_materials):
+                val += self.nu_list[i] * self.rho_field[i]
+            if val == 0:
+                val = 0.3
+            return val
+        else:
+            return self.nu_list[0]
     
     @property
     def lambda_mu(self):
@@ -305,3 +334,5 @@ class LinearElasticity(Problem):
             else:
                 self.rho_phys_field.name = "density"
                 xdmf.write_function(self.rho_phys_field)
+                self.rho_field[0].name = "density0"
+                xdmf.write_function(self.rho_field[0])

@@ -170,11 +170,13 @@ class DWOptimizer(SubOptimizer):
             rhs = []
             
             for i in range(n):
-                cut_coeff = np.concatenate(weight[i])
+                cut_coeff = np.zeros((self.rho_local_size*self.num_materials))
+                for j in range(self.num_materials):
+                    cut_coeff[j*self.rho_local_size:(j+1)*self.rho_local_size] = weight[i][j]
                 
                 rho_stacked = np.zeros((self.rho_local_size))
                 for j in range(self.num_materials):
-                    rho_stacked += rho[i][j]
+                    rho_stacked += rho[i][j][:self.rho_local_size]
                 trust_region_coeff_stack = (1 - 2*rho_stacked) / self.rho_global_size
                 trust_region_coeff = np.zeros((self.rho_local_size*self.num_materials))
                 for j in range(self.num_materials):
@@ -185,12 +187,12 @@ class DWOptimizer(SubOptimizer):
                 
                 rho_flattened = np.zeros((self.rho_local_size*self.num_materials))
                 for j in range(self.num_materials):
-                    rho_flattened[j*self.rho_local_size:(j+1)*self.rho_local_size] = rho[i][j]
+                    rho_flattened[j*self.rho_local_size:(j+1)*self.rho_local_size] = rho[i][j][:self.rho_local_size]
                 
                 rhs_local = cut_coeff@rho_flattened
                 rhs_local = self.comm.allreduce(rhs_local)
                 rhs.append(-obj[i]+rhs_local)
-                rho_total = self.comm.allreduce(np.sum(rho_flattened**2))/self.rho_global_size
+                rho_total = self.comm.allreduce(np.sum(rho_stacked**2))
                 rhs.append(-rho_total/self.rho_global_size + d[i])
             
             constraints_coeff.append(self.dQdrho)
@@ -210,7 +212,11 @@ class DWOptimizer(SubOptimizer):
             if feasibility == 1:
                 break
             else:
-                nD *= 2
+                if n > 1:
+                    for i in range(n):
+                        rhs[2*i+1] = rhs[2*i+1] + d[i]
+                else:
+                    rhs[1] = rhs[1] + d
         self.lagrange_multiplier_list.append(lagrange_multipliers_init)
         self.rho_list.append(rho_init)
         
@@ -237,7 +243,7 @@ class DWOptimizer(SubOptimizer):
             for i in range(n):
                 rho_flattened.append(np.zeros((self.rho_local_size*self.num_materials)))
                 for j in range(self.num_materials):
-                    rho_flattened[i][j*self.rho_local_size:(j+1)*self.rho_local_size] = rho[i][j]
+                    rho_flattened[i][j*self.rho_local_size:(j+1)*self.rho_local_size] = rho[i][j][:self.rho_local_size]
         
         for i in range(50):
             start_time = MPI.Wtime()
@@ -257,6 +263,10 @@ class DWOptimizer(SubOptimizer):
                 lagrange_multipliers = self.master_problem_multicuts(obj, constraints_coeff, rhs, nD, n)
             end_time = MPI.Wtime()
             master_problem_time += end_time - start_time
+            
+            if check_milp_solution:
+                if self.comm.rank == 0:
+                    print(lagrange_multipliers, flush=True)
             
             stop_criteria = 0
             for j in range(i):
@@ -431,24 +441,22 @@ class DWOptimizer(SubOptimizer):
                     weight_global[i*rho_size:(i+1)*rho_size] = np.concatenate(weight_gather)
                     dQdrho_global[i*rho_size:(i+1)*rho_size] = np.concatenate(dQdrho_gather)
         else:
-            rho_global = []
-            weight_global = []
+            rho_size = self.rho_offset[-1]
+            rho_global = np.zeros((n, rho_size*self.num_materials))
+            weight_global = np.zeros((n, rho_size*self.num_materials))
+            dQdrho_global = np.zeros(rho_size*self.num_materials)
             
-            for i in range(n):
-                rho_global_cut = self.comm.gather(rho[i], root=0)
-                weight_global_cut = self.comm.gather(weight[i], root=0)
+            for i in range(self.num_materials):
+                for j in range(n):
+                    rho_gather = self.comm.gather(rho[j][i], root=0)
+                    weight_gather = self.comm.gather(weight[j][i], root=0)
+                    if self.comm.rank == 0:
+                        rho_global[j, i*rho_size:(i+1)*rho_size] = np.concatenate(rho_gather)
+                        weight_global[j, i*rho_size:(i+1)*rho_size] = np.concatenate(weight_gather)
                 
+                dQdrho_gather = self.comm.gather(self.dQdrho[0, i*self.rho_local_size:(i+1)*self.rho_local_size], root=0)
                 if self.comm.rank == 0:
-                    rho_global_cut = np.concatenate(rho_global_cut)
-                    weight_global_cut = np.array(np.concatenate(weight_global_cut))
-                    
-                    rho_global.append(rho_global_cut)
-                    weight_global.append(weight_global_cut)
-                
-                self.comm.Barrier()
-            
-            if self.comm.rank == 0:
-                rho_size = len(rho_global[0])
+                    dQdrho_global[i*rho_size:(i+1)*rho_size] = np.concatenate(dQdrho_gather)
         
         if self.comm.rank == 0:            
             with gp.Env(params=self.options) as env, gp.Model(env=env) as model:
@@ -468,6 +476,7 @@ class DWOptimizer(SubOptimizer):
                         rho_stacked += rho_global[i*rho_size:(i+1)*rho_size]
                     trust_region_coeff = np.repeat(1 - 2*rho_stacked, self.num_materials)
                     trust_region_const = trust_region_coeff @ x + np.sum(rho_stacked**2) - d*rho_size
+                    # material usage constraint
                     model.addConstr(trust_region_const <= 0)
                     if self.num_materials > 1:
                         for i in range(rho_size):
@@ -489,16 +498,22 @@ class DWOptimizer(SubOptimizer):
                         model.addConstr(trust_region_const <= 0)
                     
                     # mass/volume constraint
-                    volume_coeff = np.ones(rho_size)/rho_size
-                    volume_const = volume_coeff @ x - quantity
-                    model.addConstr(volume_const <= 0)
+                    quantity_constraint = dQdrho_global @ x - (dQdrho_global @ rho_global + quantity)
+                    model.addConstr(quantity_constraint <= 0)
+                    # material usage constraint
+                    if self.num_materials > 1:
+                        for i in range(rho_size):
+                            model.addConstr(x[i:self.num_materials*rho_size:rho_size].sum() <= 1)
                 
                 model.optimize()
             
                 status = model.status
                 if status == gp.GRB.OPTIMAL:
                     rho_global_new = x.getAttr('X').copy()
-                    lagrange_multipliers = model.getAttr('Pi')[0:2].copy()
+                    if n == 1:
+                        lagrange_multipliers = model.getAttr('Pi')[0:2].copy()
+                    else:
+                        lagrange_multipliers = model.getAttr('Pi')[0:2*n+1].copy()
                     cost = model.objVal
                     optimize_result = 1
                 else:
@@ -614,9 +629,11 @@ class DWOptimizer(SubOptimizer):
                 
                 model.setObjective(eta, gp.GRB.MINIMIZE)
                 
+                # cuts and trust region constraint
                 for i in range(num_cuts):
                     model.addConstr(constraints_global[2*i, :] @ x - eta <= rhs[2*i])
                     model.addConstr(constraints_global[2*i+1, :] @ x <= rhs[2*i+1])
+                # mass/volume constraint
                 model.addConstr(constraints_global[-1, :] @ x <= rhs[-1])
                 
                 row_nD = np.zeros(n*nD)

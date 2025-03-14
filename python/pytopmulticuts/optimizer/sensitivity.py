@@ -39,7 +39,10 @@ class Sensitivity():
         if self.opt_compliance:
             self.C_form = form(problem.J)
         if problem.interpolation == "continuous":
-            self.dCdrho_form = form(-ufl.derivative(problem.J, problem.rho_phys_field))
+            self.dCdrho_form, self.dCdrho_vec = [], []
+            for i in range(self.num_materials):
+                self.dCdrho_form.append(form(-ufl.derivative(problem.J, problem.rho_phys_field)))
+                self.dCdrho_vec.append(create_vector(self.dCdrho_form[-1]))
         else:
             self.dCdrho_form, self.dCdrho_vec = [], []
             for i in range(self.num_materials):
@@ -96,4 +99,4 @@ class Sensitivity():
         if self.num_materials > 1:
             return self.dMdrho_vec
         else:
-            return [self.dVdrho_vec]
+            return [self.dVdrho_vec.copy()]

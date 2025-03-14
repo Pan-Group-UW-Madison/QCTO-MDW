@@ -16,22 +16,24 @@ os.system("clear")
 MPI.COMM_WORLD.barrier()
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--Nx", type=int, default=25, help="Number of elements in x direction")
+parser.add_argument("--Nx", type=int, default=50, help="Number of elements in x direction")
 parser.add_argument("--log", action='store_true', help="Log file")
 
 args, unknown = parser.parse_known_args()
 
 Nx = Nz = args.Nx
-Ny = 4 * Nx
+Ny = 3 * Nx
 
 hashtag_local = sha256(str(time.time()).encode()).hexdigest()
 hashtag = MPI.COMM_WORLD.bcast(hashtag_local, root=0)
 
 hashtag_short = hashtag[:8]
 
+problem_prefix = "negative_poisson_dw_"
+
 if args.log:
-    output_filename = "log/bridge_multicuts_dw_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".log"
-    error_filename = "log/bridge_multicuts_dw_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".err"
+    output_filename = "log/" + problem_prefix + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".log"
+    error_filename = "log/" + problem_prefix + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".err"
     sys.stdout = open(output_filename, 'w')
     sys.stderr = open(error_filename, 'w')
 
@@ -44,43 +46,30 @@ if MPI.COMM_WORLD.rank == 0:
     print("Hashtag: " + str(hashtag), flush=True)
 
 partitioner = create_cell_partitioner(partitioner_scotch())
-mesh = create_box(MPI.COMM_WORLD, [[0, 0, 0], [10, 40, 10]],
+mesh = create_box(MPI.COMM_WORLD, [[0, 0, 0], [10, 30, 10]],
                 [Nx, Ny, Nz], CellType.hexahedron, ghost_mode=mesh.GhostMode.none, partitioner=partitioner)
 
 descriptor = {
     "prefix": "result/",
-    "problem name": "bridge_multicuts_dw_"+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
+    "problem_name": problem_prefix+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
     "mesh": mesh,
-    "young's modulus": [210.0],
-    "poisson's ratio": [0.29],
-    "disp_bc": lambda x: (np.isclose(x[2], 0) & np.less(x[1], 2)) | (np.isclose(x[2], 0) & np.greater(x[1], 38)),
+    "young's modulus": [100.0],
+    "poisson's ratio": 0.25,
+    "disp_bc": lambda x: np.isclose(x[1], 0),
     "traction_bcs": [[(0, 0, -0.1),
-                     lambda x: np.isclose(x[2], 10)]],
+                     lambda x: np.isclose(x[1], 40)]],
     "body_force": (0, 0, 0),
     "quadrature_degree": 2,
     "petsc_options": {
         "ksp_type": "gmres",
-        "ksp_rtol": 1e-8,
+        "ksp_rtol": 1e-6,
         "ksp_max_it": 500,
         "ksp_gmres_restart": 100,
-        # "ksp_monitor": None,
-        # "ksp_monitor_true_residual": None,
         "pc_type": "gamg",
-        # "pc_type": "hypre",
-        # "pc_hypre_type": "boomeramg",
-        # "pc_hypre_boomeramg_nodal_coarsen": 3,
-        # "pc_hypre_boomeramg_strong_threshold": 0.75,
-        # "pc_hypre_boomeramg_coarsen_type": "HMIS",
-        # "pc_hypre_boomeramg_interp_type": "ext+i",
-        # "pc_hypre_boomeramg_agg_nl": 4,
-        # "pc_hypre_boomeramg_agg_num_paths": 5,
-        # "pc_type": "asm",
-        # "pc_asm_overlap": 2,
-        # "sub_ksp_type": "preonly",
-        # "sub_pc_type": "gamg",
     },
-    "objective": "compliance",
+    "objective": "target displacement",
     "interpolation": "discrete",
+    "target displacement": [lambda x: 0.1 * np.sin(np.pi * x[1] / 10), lambda x: np.isclose(x[2], 10)]
 }
 
 problem = LinearElasticity(descriptor)
@@ -94,7 +83,7 @@ multicuts_descriptor = {
     "vol_frac": 0.1,
     "initial_vol_frac": 0.3,
     "num_stages": 5,
-    "solid_zone": lambda x: np.greater(x[2], 9.8),
+    "solid_zone": lambda x: np.full(x.shape[1], False),
     "void_zone": lambda x: np.full(x.shape[1], False),
     "num_divisions": 100,
     "solver_type": "quantum-simulated-subproblem",

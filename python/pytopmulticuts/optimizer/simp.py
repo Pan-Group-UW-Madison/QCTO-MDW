@@ -28,7 +28,7 @@ class SimpOptimizer(Optimizer):
         
         if descriptor["subproblem_solver"] == "mma":
             self.sub_optimizer = MMAOptimizer(problem)
-            num_elems = self.problem.rho_field.x.petsc_vec.array.size
+            num_elems = self.problem.rho_field[0].x.petsc_vec.array.size
             rho_old1, rho_old2 = np.zeros(num_elems), np.zeros(num_elems)
             low, upp = None, None
         elif descriptor["subproblem_solver"] == "oc":
@@ -37,15 +37,15 @@ class SimpOptimizer(Optimizer):
             raise ValueError("Invalid subproblem_solver")
             exit(1)
             
-        rho_field = self.problem.rho_field
+        rho_field = self.problem.rho_field[0]
         num_elems = rho_field.x.petsc_vec.array.size
         centers = rho_field.function_space.tabulate_dof_coordinates()[:num_elems].T
         solid, void = descriptor["solid_zone"](centers), descriptor["void_zone"](centers)
         rho_ini = np.full(num_elems, descriptor["vol_frac"])
-        rho_ini[solid], rho_ini[void] = 0.995, 0.005
-        rho_field.x.petsc_vec.array[:] = rho_ini
+        rho_ini[solid], rho_ini[void] = 1.0, 0.005
+        rho_field.x.petsc_vec.array[:] = rho_ini.copy()
         rho_min, rho_max = np.zeros(num_elems), np.ones(num_elems)
-        rho_min[solid], rho_max[void] = 0.99, 0.01
+        rho_min[solid], rho_max[void] = 0.999, 0.001
         
         self.num_fem = 0
         self.sub_optimizer.rho_min, self.sub_optimizer.rho_max = rho_min, rho_max
@@ -75,23 +75,21 @@ class SimpOptimizer(Optimizer):
             self.problem.solve_prime()
             
             # Compute function values and sensitivities
-            [C_value, V_value, U_value], sensitivities = sens_problem.evaluate()
+            [C_value, V_value], dJdrho = sens_problem.evaluate()
+            dVdrho = sens_problem.evaluate_quantity()
+            sensitivities = [dJdrho, dVdrho]
             heaviside.backward(sensitivities)
-            [dCdrho, dVdrho, dUdrho] = density_filter.backward(sensitivities)
-            if self.problem.objective == "compliance":
-                g_vec = np.array([V_value-self.vol_frac])
-                dJdrho, dgdrho = dCdrho, np.vstack([dVdrho])
-            else:
-                g_vec = np.array([V_value-self.vol_frac, C_value-opt["compliance_bound"]])
-                dJdrho, dgdrho = dUdrho, np.vstack([dVdrho, dCdrho])
+            [dCdrho, dVdrho] = density_filter.backward(sensitivities)
+            g_vec = np.array([V_value-self.vol_frac])
+            dJdrho, dgdrho = dCdrho, np.vstack([dVdrho])
             fem_sen_time = time.perf_counter() - fem_sen_time
             self.analysis_time += fem_sen_time
             
             # Update the design variables
             opt_start_time = time.perf_counter()
-            rho_values = self.problem.rho_field.x.petsc_vec.array.copy()
+            rho_values = self.problem.rho_field[0].x.petsc_vec.array.copy()
             rho_new = self.sub_optimizer.update(rho_values, dJdrho, g_vec, dgdrho[0])
-            self.problem.rho_field.x.petsc_vec.array = rho_new.copy()
+            self.problem.rho_field[0].x.petsc_vec.array = rho_new.copy()
             opt_time += time.perf_counter() - opt_start_time
             self.optimization_time += opt_time
             

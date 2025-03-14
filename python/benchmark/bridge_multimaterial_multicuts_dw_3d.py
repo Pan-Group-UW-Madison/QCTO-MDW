@@ -8,6 +8,7 @@ import time
 from datetime import datetime
 from dolfinx.graph import partitioner_scotch
 import argparse
+import math
 
 import os
 import sys
@@ -50,17 +51,18 @@ mesh = create_box(MPI.COMM_WORLD, [[0, 0, 0], [10, 40, 10]],
                 [Nx, Ny, Nz], CellType.hexahedron, ghost_mode=mesh.GhostMode.none, partitioner=partitioner)
 
 descriptor = {
-    "prefix": "intermediate/",
-    # "problem_name": project_name+"_"+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
-    "problem_name": project_name,
+    "prefix": "result/",
+    # "problem name": project_name,
+    "problem name": project_name+"_"+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
     "mesh": mesh,
-    # "young's modulus": [44, 73, 100, 210],
-    # "density": [1.74, 2.70, 4.50, 7.80],
-    "young's modulus": [44, 73, 210],
-    "density": [1.74, 2.70, 7.8],
+    "young's modulus": [44, 73, 100, 210],
+    "density": [1.74, 2.70, 4.50, 7.80],
+    # "young's modulus": [44, 73, 210],
+    # "density": [1.74, 2.70, 7.80],
     # "young's modulus": [73, 210],
     # "density": [2.70, 7.80],
-    "poisson's ratio": 0.3,
+    # "poisson's ratio": [0.28, 0.33, 0.29],
+    "poisson's ratio": [0.28, 0.33, 0.36, 0.29],
     "disp_bc": lambda x: (np.isclose(x[2], 0) & np.less(x[1], 2)) | (np.isclose(x[2], 0) & np.greater(x[1], 38)),
     "traction_bcs": [[(0, 0, -0.1),
                      lambda x: np.isclose(x[2], 10)]],
@@ -68,7 +70,7 @@ descriptor = {
     "quadrature_degree": 2,
     "petsc_options": {
         "ksp_type": "gmres",
-        "ksp_rtol": 1e-6,
+        "ksp_rtol": 1e-8,
         "ksp_max_it": 500,
         "ksp_gmres_restart": 100,
         # "ksp_monitor": None,
@@ -85,16 +87,16 @@ multicuts_descriptor = {
     "max_iter": 100,
     "opt_tol": 5e-3,
     "initial_trust_region": 0.3,
-    "filter_radius": 10 / Nx * 2.5,
+    "filter_radius": 10 / Nx * 3,
     "mass": 3120,
     # "initial_mass": 800,
     # "num_stages": 3,
     # "solid_zone": [lambda x: np.full(x.shape[1], False), lambda x: np.greater(x[2], 9.8)],
     # "void_zone": [lambda x: np.greater(x[2], 9.8), lambda x: np.full(x.shape[1], False)],
-    "solid_zone": [lambda x: np.full(x.shape[1], False),  lambda x: np.full(x.shape[1], False), lambda x: np.greater(x[2], 9.8)],
-    "void_zone": [lambda x: np.greater(x[2], 9.8),  lambda x: np.greater(x[2], 9.8), lambda x: np.full(x.shape[1], False)],
-    # "solid_zone": [lambda x: np.full(x.shape[1], False), lambda x: np.full(x.shape[1], False), lambda x: np.full(x.shape[1], False), lambda x: np.greater(x[2], 9.8)],
-    # "void_zone": [lambda x: np.greater(x[2], 9.8), lambda x: np.greater(x[2], 9.8), lambda x: np.greater(x[2], 9.8), lambda x: np.full(x.shape[1], False)],
+    # "solid_zone": [lambda x: np.full(x.shape[1], False),  lambda x: np.full(x.shape[1], False), lambda x: np.greater(x[2], 9.8)],
+    # "void_zone": [lambda x: np.greater(x[2], 9.8),  lambda x: np.greater(x[2], 9.8), lambda x: np.full(x.shape[1], False)],
+    "solid_zone": [lambda x: np.full(x.shape[1], False), lambda x: np.full(x.shape[1], False), lambda x: np.full(x.shape[1], False), lambda x: np.greater(x[2], 9.8)],
+    "void_zone": [lambda x: np.greater(x[2], 9.8), lambda x: np.greater(x[2], 9.8), lambda x: np.greater(x[2], 9.8), lambda x: np.full(x.shape[1], False)],
     "num_divisions": 100,
     "solver_type": "quantum-simulated-subproblem",
 }

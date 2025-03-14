@@ -33,7 +33,7 @@ class DensityFilter():
     def __init__(self, problem, R, petsc_options={}):
         """Construct a PDE filter."""
         # Initialization
-        rho = problem.rho_field
+        rho = problem.rho_field[0]
         rho_tilde = problem.rho_phys_field
         S0, S = rho.function_space, rho_tilde.function_space
         u0, u = ufl.TrialFunction(S0), ufl.TrialFunction(S)
@@ -88,7 +88,7 @@ class DensityFilter():
         values = []
         for sf in sf_vectors:
             if sf is not None:
-                self.solver.solve(sf, self.af_wrap)
+                self.solver.solve(sf[0], self.af_wrap)
                 self.af.x.scatter_forward()
                 self.T_mat_transpose.mult(self.af.x.petsc_vec, self.vec_s0)
                 values.append(self.vec_s0.array.copy())
@@ -151,5 +151,5 @@ class Heaviside():
 
     def backward(self, vectors):
         for vector in vectors:
-            if vector is not None:
-                vector.array *= self.drho
+            if vector[0] is not None:
+                vector[0].array *= self.drho

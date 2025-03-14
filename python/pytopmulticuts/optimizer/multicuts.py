@@ -195,20 +195,23 @@ class MulticutsOptimizer(Optimizer):
         
         [J, quantity], dJdrho = self.sens_problem.evaluate()
         
-        E_max = max(self.problem.E_list)
-        rho = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
+        dJdrho_base = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
         rho_mask = np.zeros(self.problem.rho_field[0].x.petsc_vec.array.size)
         for i in range(self.problem.num_materials):
-            rho += self.problem.rho_field[i].x.petsc_vec.array.copy() * self.problem.E_list[i]
-            rho_mask += self.problem.rho_field[i].x.petsc_vec.array.copy() * (i+1)
+            dJdrho_base[self.problem.rho_field[i].x.petsc_vec.array > 0] = \
+                dJdrho[i].array[self.problem.rho_field[i].x.petsc_vec.array > 0].copy()
+            rho_mask += self.problem.rho_field[i].x.petsc_vec.array.copy()
+        dJdrho_base[rho_mask < 1e-3] = self.problem.eps.value * \
+            dJdrho[-1].array[rho_mask < 1e-3]
         
         for i in range(self.problem.num_materials):
-            rho_filter = self.problem.rho_field[i].x.petsc_vec.array.copy()
-            rho_filter[self.problem.rho_field[i].x.petsc_vec.array == 0] = \
-                2 * rho[self.problem.rho_field[i].x.petsc_vec.array == 0] / \
-                    (self.problem.E_list[i] + rho[self.problem.rho_field[i].x.petsc_vec.array == 0])
-            rho_filter[rho_mask < 1e-3] = self.problem.eps.value * E_max / self.problem.E_list[i]
-            dJdrho[i] = dJdrho[i].array.copy() * rho_filter
+            dJdrho[i] = dJdrho[i].array.copy()
+            idx = np.where(self.problem.rho_field[i].x.petsc_vec.array > 0)
+            dJdrho[i][idx] = dJdrho[i][idx] * self.problem.rho_field[i].x.petsc_vec.array[idx]
+            idx = np.where(self.problem.rho_field[i].x.petsc_vec.array == 0)
+            dJdrho[i][idx] = \
+                2.0 * np.divide(np.multiply(dJdrho[i][idx], dJdrho_base[idx]), dJdrho[i][idx] + dJdrho_base[idx])
+            dJdrho[i][rho_mask < 1e-3] = dJdrho_base[rho_mask < 1e-3]
             dJdrho[i] = self.sens_filter.filter(dJdrho[i])
         
         for i in range(self.problem.num_materials):
@@ -221,9 +224,9 @@ class MulticutsOptimizer(Optimizer):
     def update_trust_region(self, c0, c, cost, d):
         omega = (c0 - c) / (c0 - cost)
         if omega < 0.2 and omega >= 0:
-            factor = max(0.75 * d, 0.1)
+            factor = max(0.75 * d, 1e-3)
         elif omega < 0:
-            factor = max(0.5 * d, 0.1)
+            factor = max(0.5 * d, 1e-3)
         elif omega > 0.5:
             factor = min(1.5 * d, 1.0)
         else:
@@ -251,13 +254,13 @@ class MulticutsOptimizer(Optimizer):
             A = -(n - 1) / math.log(self.quantity_constraint / self.initial_quantity_constraint)
             quantity_constraint_list = np.exp(-np.arange(n) / A) * self.initial_quantity_constraint
             quantity_constraint_list = np.round(quantity_constraint_list, decimals=4)
-            quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
+            # quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
             quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
         else:
-            quantity_constraint_list = np.ones(self.num_stages+2, dtype=float) * self.quantity_constraint
+            quantity_constraint_list = np.ones(self.num_stages+1, dtype=float) * self.quantity_constraint
         
-        eps_list = np.ones(self.num_stages+2, dtype=float) * 1e-2
-        eps_list[-2] = 1e-3
+        eps_list = np.ones(self.num_stages+1, dtype=float) * 1e-2
+        # eps_list[-2] = 1e-3
         eps_list[-1] = 1e-4
         
         quantity_local_offset = 0.0
@@ -280,6 +283,7 @@ class MulticutsOptimizer(Optimizer):
         self.sub_optimizer.set_dQdrho(dQdrho)
         
         self.stage = 0
+        min_inner_iter = 25
         
         while self.stage < len(quantity_constraint_list) and self.num_fem < self.max_iter:
             if self.comm.rank == 0:
@@ -420,7 +424,7 @@ class MulticutsOptimizer(Optimizer):
                 else:
                     stack_ite += 1
                 
-                if (condition1 and condition2) or stack_ite > 3 or (num_inner_iter > 25 and condition1):
+                if (condition1 and condition2) or stack_ite > 5 or (num_inner_iter > min_inner_iter and condition1):
                     break
             
             self.stage += 1
@@ -435,6 +439,8 @@ class MulticutsOptimizer(Optimizer):
                 J = upper_bound
                 dJdrho = weight_optimal.copy()
                 self.d = max(quantity_constraint_list[self.stage - 1] - quantity_constraint_list[self.stage] + 5e-3, d_optimal)
+                
+                min_inner_iter = 10
                 
                 # self.problem.save_results("_" + str(self.stage))
                 
@@ -457,13 +463,24 @@ class MulticutsOptimizer(Optimizer):
         
         self.cuts.add_solution(rho_new, cost, c_value, sens, d)
         
-        self.cuts.flag_solution([self.cuts.num_cuts - 1])
-        
         # multi cuts
         if self.cuts.num_cuts > 1:
             if cost < min(self.cuts.solution[0][:-1]):
                 self.cuts.flag_solution([self.cuts.num_cuts - 1])
             else:
+                unused_single_cut = []
+                unused_single_cut_idx = []
+                for i in range(len(self.cuts.solution[0])-1):
+                    if self.cuts.use_flag_history[0][i] == False:
+                        unused_single_cut.append(self.cuts.solution[0][i])
+                        unused_single_cut_idx.append(i)
+                if len(unused_single_cut) > 0:
+                    idx = np.argmin(np.array(unused_single_cut))
+                    _, rho_new, cost = self.cuts.check_solution([unused_single_cut_idx[idx]])
+                    self.cuts.flag_solution([unused_single_cut_idx[idx]])
+                    
+                    return rho_new, cost
+                
                 # check multi cuts
                 min_cost_last_cut = cost
                 for i in range(2, 3):
@@ -490,6 +507,7 @@ class MulticutsOptimizer(Optimizer):
                     if estimated_min_cost > min_cost_last_cut:
                         if self.comm.rank == 0:
                             print(f"  No multicuts check", flush=True)
+                        self.cuts.flag_solution([self.cuts.num_cuts - 1])
                         break
                     
                     if self.comm.rank == 0:
@@ -533,6 +551,8 @@ class MulticutsOptimizer(Optimizer):
                         self.cuts.flag_solution(best_candidate)
                         if self.comm.rank == 0:
                             print(f"  Found multicuts {best_candidate}", flush=True)
+                    else:
+                        self.cuts.flag_solution([self.cuts.num_cuts - 1])
         else:
             self.cuts.flag_solution([0])
         
