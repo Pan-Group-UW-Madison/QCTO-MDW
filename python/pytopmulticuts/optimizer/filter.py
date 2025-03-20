@@ -1,6 +1,7 @@
 from mpi4py import MPI
 import numpy as np
 from dolfinx.mesh import locate_entities, compute_midpoints
+from dolfinx.geometry import bb_tree
 from scipy.spatial import KDTree
 from numba import njit
 from petsc4py import PETSc
@@ -143,15 +144,25 @@ class RadiusFilter:
         self.cell_symmetry_local_idx = []
         self.cell_symmetry_send_idx = []
         
+        x_coords = mesh.geometry.x[:, 0]
+        x_max, x_min = np.max(x_coords), np.min(x_coords)
+        x_max = MPI.COMM_WORLD.allreduce(x_max, op=MPI.MAX)
+        x_min = MPI.COMM_WORLD.allreduce(x_min, op=MPI.MIN)
         # symmetry in x = 5
+        length_x = x_max - x_min
         cell_centers_symmetry = cell_centers_local.copy()
-        cell_centers_symmetry[:, 0] = 10 - cell_centers_symmetry[:, 0]
+        cell_centers_symmetry[:, 0] = length_x - cell_centers_symmetry[:, 0]
         
         self.prepare_symmetry(cell_centers_local, cell_centers_symmetry)
         
+        y_coords = mesh.geometry.x[:, 1]
+        y_max, y_min = np.max(y_coords), np.min(y_coords)
+        y_max = MPI.COMM_WORLD.allreduce(y_max, op=MPI.MAX)
+        y_min = MPI.COMM_WORLD.allreduce(y_min, op=MPI.MIN)
         # symmetry in y = 20
+        length_y = y_max - y_min
         cell_centers_symmetry = cell_centers_local.copy()
-        cell_centers_symmetry[:, 1] = 40 - cell_centers_symmetry[:, 1]
+        cell_centers_symmetry[:, 1] = length_y - cell_centers_symmetry[:, 1]
         
         self.prepare_symmetry(cell_centers_local, cell_centers_symmetry)
     

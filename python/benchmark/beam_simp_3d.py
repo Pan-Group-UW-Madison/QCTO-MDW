@@ -11,6 +11,7 @@ import time
 from datetime import datetime
 
 os.system("clear")
+MPI.COMM_WORLD.barrier()
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--Nx", type=int, default=50, help="Number of elements in x direction")
@@ -32,15 +33,23 @@ if args.log:
     sys.stdout = open(output_filename, 'w')
     sys.stderr = open(error_filename, 'w')
 
+MPI.COMM_WORLD.barrier()
+
+if MPI.COMM_WORLD.rank == 0:
+    now = datetime.now()
+    date_time_str = now.strftime("%Y-%m-%d %H:%M:%S")
+    print("Start time: " + date_time_str, flush=True)
+    print("Hashtag: " + str(hashtag), flush=True)
+
 mesh = create_box(MPI.COMM_WORLD, [[0, 0, 0], [10, 30, 10]],
                 [Nx, Ny, Nz], CellType.hexahedron)
 
 descriptor = {
     "prefix": "result/",
-    "problem_name": "beam_simp_"+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
+    "problem name": "beam_simp_"+str(Nx)+"x"+str(Ny)+"x"+str(Nz)+"_"+str(hashtag_short),
     "mesh": mesh,
     "young's modulus": [210.0],
-    "poisson's ratio": 0.29,
+    "poisson's ratio": [0.29],
     "disp_bc": lambda x: np.isclose(x[1], 0) & (np.less(x[0], 1.5) | np.greater(x[0], 8.5)),
     "traction_bcs": [[(0, 0, -2.0),
                      lambda x: np.isclose(x[1], 30) & (
@@ -52,6 +61,8 @@ descriptor = {
         "ksp_type": "gmres",
         "pc_type": "gamg",
         "ksp_rtol": 1e-8,
+        "ksp_max_it": 500,
+        "ksp_gmres_restart": 100,
     },
     "objective": "compliance",
     "interpolation": "continuous",

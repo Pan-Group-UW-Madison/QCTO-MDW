@@ -51,6 +51,8 @@ class SimpOptimizer(Optimizer):
         self.sub_optimizer.rho_min, self.sub_optimizer.rho_max = rho_min, rho_max
             
     def solve(self):
+        self.problem.summary()
+        
         density_filter = DensityFilter(self.problem, self.radius)
         heaviside = Heaviside(self.problem)
         sens_problem = Sensitivity(self.problem)
@@ -97,7 +99,6 @@ class SimpOptimizer(Optimizer):
                 print(f"Iter: {self.num_iter:3d}, analysis time: {fem_sen_time:5.3f} s, optimization time: {opt_time:5.3f} s beta: {beta:2d}, C: {C_value:8.3f}, V: {V_value:.3f}", flush=True)
             
         self.running_time = time.perf_counter() - running_timer
-        self.problem.summary()
         super().summary()
         
         self.problem.save_results()
