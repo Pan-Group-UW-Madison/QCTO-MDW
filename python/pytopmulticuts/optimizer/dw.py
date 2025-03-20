@@ -230,6 +230,7 @@ class DWOptimizer(SubOptimizer):
         
         sub_problem_time = 0
         master_problem_time = 0
+        self.master_milp_problem_time = 0
         
         if self.subproblem_quantum_simulated:
             self.sub_problem_casting_time = 0
@@ -286,6 +287,7 @@ class DWOptimizer(SubOptimizer):
             print(f"  Converged at iteration {i}", flush=True)
             print(f"  Subproblem time: {sub_problem_time:.4f} s", flush=True)
             print(f"  Master problem time: {master_problem_time:.4f} s", flush=True)
+            print(f"  Master MILP problem time: {self.master_milp_problem_time:.4f} s", flush=True)
             
             if self.subproblem_quantum_simulated:
                 print(f"  Construction time of quantum subproblem: {self.sub_problem_casting_time:.4f} s", flush=True)
@@ -562,6 +564,7 @@ class DWOptimizer(SubOptimizer):
         obj_global = self.comm.reduce(obj_local, root=0)
         constraints_global = self.comm.reduce(constraints_local, root=0)
         
+        start = MPI.Wtime()
         if self.comm.rank == 0:
             with gp.Env(params=self.options) as env, gp.Model(env=env) as model:
                 x = model.addMVar(n*nD, vtype=gp.GRB.CONTINUOUS, lb=0, ub=1, name="x")
@@ -599,6 +602,9 @@ class DWOptimizer(SubOptimizer):
             lagrange_multipliers = None
             
         self.comm.Barrier()
+        end = MPI.Wtime()
+        if self.comm.rank == 0:
+            self.master_milp_problem_time += end - start
         lagrange_multipliers = np.array(self.comm.bcast(lagrange_multipliers, root=0))
         
         return lagrange_multipliers
@@ -620,6 +626,7 @@ class DWOptimizer(SubOptimizer):
         
         constraints_global = self.comm.reduce(constraints_local, root=0)
         
+        start = MPI.Wtime()
         if self.comm.rank == 0:            
             with gp.Env(params=self.options) as env, gp.Model(env=env) as model:
                 x = model.addMVar(n*nD, vtype=gp.GRB.CONTINUOUS, lb=0, ub=1, name="x")
@@ -662,6 +669,9 @@ class DWOptimizer(SubOptimizer):
             lagrange_multipliers = None
         
         self.comm.Barrier()
+        end = MPI.Wtime()
+        if self.comm.rank == 0:
+            self.master_milp_problem_time += end - start
         lagrange_multipliers = np.array(self.comm.bcast(lagrange_multipliers, root=0))
         
         return lagrange_multipliers
