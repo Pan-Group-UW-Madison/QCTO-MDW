@@ -97,6 +97,9 @@ class SimpOptimizer(Optimizer):
             
             if self.comm.rank == 0 and self.verbose > 0:
                 print(f"Iter: {self.num_iter:3d}, analysis time: {fem_sen_time:5.3f} s, optimization time: {opt_time:5.3f} s beta: {beta:2d}, C: {C_value:8.3f}, V: {V_value:.3f}", flush=True)
+                
+            if self.num_iter % 100 == 0 and self.num_iter > 100:
+                self.problem.save_results("_" + str(self.num_iter))
             
         self.running_time = time.perf_counter() - running_timer
         super().summary()
