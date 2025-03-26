@@ -293,8 +293,13 @@ class DWOptimizer(SubOptimizer):
                 print(f"  Construction time of quantum subproblem: {self.sub_problem_casting_time:.4f} s", flush=True)
         
         rho_result = []
-        for i in range(self.num_materials):
-            rho_result.append(rho_dw[i*self.rho_local_size:(i+1)*self.rho_local_size].copy())
+        if check_milp_solution:
+            for i in range(self.num_materials):
+                rho_result.append(rho_milp[i*self.rho_local_size:(i+1)*self.rho_local_size].copy())
+            cost = cost_milp
+        else:
+            for i in range(self.num_materials):
+                rho_result.append(rho_dw[i*self.rho_local_size:(i+1)*self.rho_local_size].copy())
         
         return rho_result, cost
     
@@ -342,6 +347,7 @@ class DWOptimizer(SubOptimizer):
         if optimize_result == 0:
             feasibility = 0
             x_local = None
+            lagrange_multipliers = None
         else:
             feasibility = 1
             
@@ -470,14 +476,14 @@ class DWOptimizer(SubOptimizer):
                     # cut
                     model.setObjective(obj_func, gp.GRB.MINIMIZE)
                     # mass/volume constraint
-                    quantity_constraint = dQdrho_global @ x - (dQdrho_global @ rho_global + quantity)
+                    quantity_constraint = dQdrho_global @ x - quantity
                     model.addConstr(quantity_constraint <= 0)
                     # trust region constraint
                     rho_stacked = np.zeros(rho_size)
                     for i in range(self.num_materials):
                         rho_stacked += rho_global[i*rho_size:(i+1)*rho_size]
-                    trust_region_coeff = np.repeat(1 - 2*rho_stacked, self.num_materials)
-                    trust_region_const = trust_region_coeff @ x + np.sum(rho_stacked**2) - d*rho_size
+                    trust_region_coeff = np.repeat((1 - 2*rho_stacked) / self.rho_global_size, self.num_materials)
+                    trust_region_const = trust_region_coeff @ x + np.sum(rho_stacked**2) / self.rho_global_size - d
                     # material usage constraint
                     model.addConstr(trust_region_const <= 0)
                     if self.num_materials > 1:
@@ -491,16 +497,19 @@ class DWOptimizer(SubOptimizer):
                     
                     for i in range(n):
                         # cut
-                        cut_coeff = weight_global[i].copy()
-                        cut_const = obj[i] - cut_coeff @ rho_global[i]
+                        cut_coeff = weight_global[i, :].copy()
+                        cut_const = obj[i] - cut_coeff @ rho_global[i, :]
                         model.addConstr(cut_coeff @ x + cut_const <= eta)
                         # trust region constraint
-                        trust_region_coeff = 1 - 2*rho_global[i]
-                        trust_region_const = trust_region_coeff @ x + np.sum(rho_global[i]**2) - d[i]*rho_size
+                        rho_stacked = np.zeros(rho_size)
+                        for j in range(self.num_materials):
+                            rho_stacked += rho_global[i, j*rho_size:(j+1)*rho_size]
+                        trust_region_coeff = np.repeat((1 - 2*rho_stacked) / self.rho_global_size, self.num_materials)
+                        trust_region_const = trust_region_coeff @ x + np.sum(rho_stacked**2) / self.rho_global_size - d[i]
                         model.addConstr(trust_region_const <= 0)
                     
                     # mass/volume constraint
-                    quantity_constraint = dQdrho_global @ x - (dQdrho_global @ rho_global + quantity)
+                    quantity_constraint = dQdrho_global @ x - quantity
                     model.addConstr(quantity_constraint <= 0)
                     # material usage constraint
                     if self.num_materials > 1:
@@ -530,20 +539,23 @@ class DWOptimizer(SubOptimizer):
         
         optimize_result = self.comm.bcast(optimize_result, root=0)
         if optimize_result == 0:
-            exit(1)
-        rho_global_new = self.comm.bcast(rho_global_new, root=0)
-        lagrange_multipliers = np.array(self.comm.bcast(lagrange_multipliers, root=0))
-        
-        rho_new = rho_global_new[self.rho_offset[self.comm.rank]:self.rho_offset[self.comm.rank+1]]
-        
-        if n == 1:
-            if self.comm.rank == 0:
-                cost = np.array([np.dot(weight_global, rho_global_new-rho_global)], dtype='d')
-            self.comm.Barrier()
-            cost = self.comm.bcast(cost, root=0)
-            cost = obj + cost[0]
+            rho_new = None
+            cost = None
+            lagrange_multipliers = None
         else:
-            cost = self.comm.bcast(cost, root=0)
+            rho_global_new = self.comm.bcast(rho_global_new, root=0)
+            lagrange_multipliers = np.array(self.comm.bcast(lagrange_multipliers, root=0))
+            
+            rho_new = rho_global_new[self.rho_offset[self.comm.rank]:self.rho_offset[self.comm.rank+1]]
+            
+            if n == 1:
+                if self.comm.rank == 0:
+                    cost = np.array([np.dot(weight_global, rho_global_new-rho_global)], dtype='d')
+                self.comm.Barrier()
+                cost = self.comm.bcast(cost, root=0)
+                cost = obj + cost[0]
+            else:
+                cost = self.comm.bcast(cost, root=0)
         
         return rho_new, cost, lagrange_multipliers
     

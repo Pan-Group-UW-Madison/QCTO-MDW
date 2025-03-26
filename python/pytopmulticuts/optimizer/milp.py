@@ -10,8 +10,8 @@ class MilpOptimizer(SubOptimizer):
     def __init__(self, problem):
         super().__init__(problem)
         
-        rho_local_size = problem.rho_field.x.petsc_vec.array.size
-        rho_size_by_rank = self.comm.allgather(rho_local_size)
+        self.rho_local_size = problem.rho_field[0].x.petsc_vec.array.size
+        rho_size_by_rank = self.comm.allgather(self.rho_local_size)
         
         self.rho_offset = np.cumsum([0] + rho_size_by_rank)
         
@@ -23,6 +23,12 @@ class MilpOptimizer(SubOptimizer):
             "TimeLimit": 100,
             "Threads": 1,
         }
+        self.num_materials = 1
+    
+    def set_dQdrho(self, dQdrho):
+        self.dQdrho = np.zeros((1, self.rho_local_size*self.num_materials))
+        for i in range(self.num_materials):
+            self.dQdrho[0, i*self.rho_local_size:(i+1)*self.rho_local_size] = dQdrho[i].copy()
         
     def update(self, rho, obj, weight, vol_frac, d):
         if isinstance(obj, float):

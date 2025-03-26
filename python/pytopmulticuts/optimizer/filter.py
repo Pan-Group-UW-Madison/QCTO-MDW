@@ -22,7 +22,7 @@ def compute_filter_values(target_centers, source_centers, neighbors_i, neighbors
     return filter_values
 
 class RadiusFilter:
-    def __init__(self, mesh, radius):
+    def __init__(self, mesh, radius, symmetry):
         self.mesh = mesh
         self.comm = mesh.comm
         self.radius = radius
@@ -144,27 +144,23 @@ class RadiusFilter:
         self.cell_symmetry_local_idx = []
         self.cell_symmetry_send_idx = []
         
-        x_coords = mesh.geometry.x[:, 0]
-        x_max, x_min = np.max(x_coords), np.min(x_coords)
-        x_max = MPI.COMM_WORLD.allreduce(x_max, op=MPI.MAX)
-        x_min = MPI.COMM_WORLD.allreduce(x_min, op=MPI.MIN)
-        # symmetry in x = 5
-        length_x = x_max - x_min
-        cell_centers_symmetry = cell_centers_local.copy()
-        cell_centers_symmetry[:, 0] = length_x - cell_centers_symmetry[:, 0]
-        
-        self.prepare_symmetry(cell_centers_local, cell_centers_symmetry)
-        
-        y_coords = mesh.geometry.x[:, 1]
-        y_max, y_min = np.max(y_coords), np.min(y_coords)
-        y_max = MPI.COMM_WORLD.allreduce(y_max, op=MPI.MAX)
-        y_min = MPI.COMM_WORLD.allreduce(y_min, op=MPI.MIN)
-        # symmetry in y = 20
-        length_y = y_max - y_min
-        cell_centers_symmetry = cell_centers_local.copy()
-        cell_centers_symmetry[:, 1] = length_y - cell_centers_symmetry[:, 1]
-        
-        self.prepare_symmetry(cell_centers_local, cell_centers_symmetry)
+        for sym in symmetry:
+            if sym == "x":
+                idx = 0
+            elif sym == "y":
+                idx = 1
+            elif sym == "z":
+                idx = 2
+            
+            coords = mesh.geometry.x[:, idx]
+            coord_max, coord_min = np.max(coords), np.min(coords)
+            coord_max = MPI.COMM_WORLD.allreduce(coord_max, op=MPI.MAX)
+            coord_min = MPI.COMM_WORLD.allreduce(coord_min, op=MPI.MIN)
+            length = coord_max - coord_min
+            cell_centers_symmetry = cell_centers_local.copy()
+            cell_centers_symmetry[:, idx] = length - cell_centers_symmetry[:, idx]
+            
+            self.prepare_symmetry(cell_centers_local, cell_centers_symmetry)
     
     def filter(self, field):
         # symmetry

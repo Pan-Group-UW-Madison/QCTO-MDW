@@ -134,6 +134,8 @@ class MulticutsOptimizer(Optimizer):
         else:
             self.num_stages = 1
         
+        self.symmetry = descriptor["filter symmetry"]
+        
         self.min_eps_factor = 1e-4
         
         self.verbose = 1
@@ -218,19 +220,19 @@ class MulticutsOptimizer(Optimizer):
             self.problem.sensitivity[i].x.petsc_vec.array = dJdrho[i]
         
         self.num_fem += 1
+        
+        # self.problem.save_results("_" + str(self.num_fem))
             
         return J, quantity, dJdrho
     
     def update_trust_region(self, c0, c, cost, d):
         omega = (c0 - c) / (c0 - cost)
-        if omega < 0.2 and omega >= 0:
+        if omega < 1 and omega >= 0:
             factor = max(0.75 * d, 1e-3)
         elif omega < 0:
             factor = max(0.5 * d, 1e-3)
-        elif omega > 0.5:
-            factor = min(1.5 * d, 1.0)
         else:
-            factor = d
+            factor = min(2 * d, 1.0)
         
         if self.comm.rank == 0 and self.verbose > 0:
             print(f"  Trust region: {d:4.3f} -> {factor:4.3f} with omega {omega:4.3f}", flush=True)
@@ -241,7 +243,7 @@ class MulticutsOptimizer(Optimizer):
         self.problem.summary()
         
         self.sens_problem = Sensitivity(self.problem)
-        self.sens_filter = RadiusFilter(self.problem.mesh, self.radius)
+        self.sens_filter = RadiusFilter(self.problem.mesh, self.radius, self.symmetry)
         
         running_timer = time.perf_counter()
         
@@ -254,13 +256,14 @@ class MulticutsOptimizer(Optimizer):
             A = -(n - 1) / math.log(self.quantity_constraint / self.initial_quantity_constraint)
             quantity_constraint_list = np.exp(-np.arange(n) / A) * self.initial_quantity_constraint
             quantity_constraint_list = np.round(quantity_constraint_list, decimals=4)
-            # quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
+            if self.problem.num_materials == 1:
+                quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
             quantity_constraint_list = np.append(quantity_constraint_list, self.quantity_constraint)
         else:
-            quantity_constraint_list = np.ones(self.num_stages+1, dtype=float) * self.quantity_constraint
+            quantity_constraint_list = np.array([self.quantity_constraint, self.quantity_constraint, self.quantity_constraint])
         
-        eps_list = np.ones(self.num_stages+1, dtype=float) * 1e-2
-        # eps_list[-2] = 1e-3
+        eps_list = np.ones(self.num_stages+2, dtype=float) * 1e-2
+        eps_list[-2] = 1e-3
         eps_list[-1] = 1e-4
         
         quantity_local_offset = 0.0
@@ -283,7 +286,7 @@ class MulticutsOptimizer(Optimizer):
         self.sub_optimizer.set_dQdrho(dQdrho)
         
         self.stage = 0
-        min_inner_iter = 25
+        min_inner_iter = 0
         
         while self.stage < len(quantity_constraint_list) and self.num_fem < self.max_iter:
             if self.comm.rank == 0:
@@ -358,7 +361,7 @@ class MulticutsOptimizer(Optimizer):
                 num_inner_iter += 1
                 
                 fem_sen_time = time.perf_counter()
-                J, V_value, dJdrho = self.solve_prime()
+                J, quantity, dJdrho = self.solve_prime()
                 fem_sen_time = time.perf_counter() - fem_sen_time
                 self.analysis_time += fem_sen_time
                 
@@ -375,8 +378,8 @@ class MulticutsOptimizer(Optimizer):
                     c = J
                 
                 # stop condition
-                condition1 = abs(J - upper_bound) / abs(upper_bound) < self.opt_tol
-                condition2 = abs(J - cost) / abs(upper_bound) < self.opt_tol
+                condition1 = round(abs(J - upper_bound) / abs(upper_bound), 3) <= self.opt_tol
+                condition2 = round(abs(J - cost) / abs(upper_bound), 3) <= self.opt_tol
                 condition3 = (J > upper_bound) and (cost > upper_bound)
                 
                 # branch over the cuts
@@ -398,7 +401,7 @@ class MulticutsOptimizer(Optimizer):
                             f"optimization time: {opt_time:9.4f} s, "\
                             f"C: {J:6.3f}, Cost: {cost:8.4f}, "\
                             f"Upper: {upper_bound:6.3f}, ", \
-                            f"V: {V_value:4.3f}, ", \
+                            f"V: {quantity:4.3f}, ", \
                             f"Trust region: {self.d:4.3f}, ", \
                             f"Con1: {abs(J - upper_bound) / abs(upper_bound):5.3f}, ", \
                             f"Con2: {abs(J - cost) / abs(upper_bound):5.3f}", \
@@ -424,7 +427,7 @@ class MulticutsOptimizer(Optimizer):
                 else:
                     stack_ite += 1
                 
-                if (condition1 and condition2) or stack_ite > 5 or (num_inner_iter > min_inner_iter and condition1):
+                if (condition1 and condition2) or stack_ite > 5:
                     break
             
             self.stage += 1
@@ -438,9 +441,12 @@ class MulticutsOptimizer(Optimizer):
                 rho_values = rho_optimal
                 J = upper_bound
                 dJdrho = weight_optimal.copy()
-                self.d = max(quantity_constraint_list[self.stage - 1] - quantity_constraint_list[self.stage] + 5e-3, d_optimal)
+                if self.stage < self.num_stages:
+                    self.d = max(quantity_constraint_list[self.stage - 1] - quantity_constraint_list[self.stage] + 5e-3, d_optimal)
+                else:
+                    self.d = max(self.d0, d_optimal)
                 
-                min_inner_iter = 10
+                min_inner_iter = 0
                 
                 # self.problem.save_results("_" + str(self.stage))
                 
