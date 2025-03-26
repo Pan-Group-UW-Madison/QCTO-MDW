@@ -170,6 +170,8 @@ class LinearElasticity(Problem):
             self.density_list = np.array([1.0], dtype=np.float64)
         
         self.num_materials = np.size(self.E_list, 0)
+        if self.num_materials > 1:
+            self.material_name = descriptor["material name"]
         
         if isinstance(descriptor["poisson's ratio"], (int, float)):
             if self.num_materials > 1:
