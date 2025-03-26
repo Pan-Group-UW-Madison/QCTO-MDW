@@ -1,4 +1,4 @@
-from pytopmulticuts import SimpOptimizer, MulticutsOptimizer, LinearElasticity
+from pytopmulticuts import SimpOptimizer, LinearElasticity
 from dolfinx.mesh import create_box, CellType
 from mpi4py import MPI
 import numpy as np
@@ -28,8 +28,8 @@ hashtag = MPI.COMM_WORLD.bcast(hashtag_local, root=0)
 hashtag_short = hashtag[:8]
 
 if args.log:
-    output_filename = "log/bridge_simp_dw_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".log"
-    error_filename = "log/bridge_simp_dw_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".err"
+    output_filename = "log/bridge_simp_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".log"
+    error_filename = "log/bridge_simp_" + str(Nx) + "x" + str(Ny) + "x" + str(Nz) + "_" + str(hashtag_short) + ".err"
     sys.stdout = open(output_filename, 'w')
     sys.stderr = open(error_filename, 'w')
 
@@ -70,7 +70,7 @@ problem = LinearElasticity(descriptor)
 
 simp_descriptor = {
     "subproblem_solver": "oc",
-    "max_iter": 500,
+    "max_iter": 400,
     "opt_tol": 1e-5,
     "filter_radius": 0.6,
     "vol_frac": 0.12,
