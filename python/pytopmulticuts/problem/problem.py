@@ -327,6 +327,11 @@ class LinearElasticity(Problem):
                 for i in range(self.num_materials):
                     self.material.x.petsc_vec.array += self.rho_field[i].x.petsc_vec.array * (i+1)
                 xdmf.write_function(self.material)
+                if self.num_materials > 1:
+                    self.rho_field[i].name = self.material_name[i]
+                    xdmf.write_function(self.rho_field[i])
             else:
-                self.rho_phys_field.name = "density"
+                self.rho_phys_field.name = "interpolated_density"
                 xdmf.write_function(self.rho_phys_field)
+                self.rho_field[0].name = "density"
+                xdmf.write_function(self.rho_field[0])

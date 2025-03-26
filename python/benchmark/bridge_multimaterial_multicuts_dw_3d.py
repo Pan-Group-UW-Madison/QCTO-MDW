@@ -57,6 +57,7 @@ descriptor = {
     "mesh": mesh,
     "young's modulus": [44, 73, 100, 210],
     "density": [1.74, 2.70, 4.50, 7.80],
+    "material name": ["Magnesium", "Aluminum", "Titanium", "Stainless steel"],
     # "young's modulus": [44, 73, 210],
     # "density": [1.74, 2.70, 7.80],
     # "young's modulus": [73, 210],
