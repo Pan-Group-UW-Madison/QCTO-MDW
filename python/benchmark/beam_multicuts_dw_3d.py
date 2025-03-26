@@ -74,10 +74,10 @@ problem = LinearElasticity(descriptor)
 
 multicuts_descriptor = {
     "subproblem_solver": "dw",
-    "max_iter": 200,
+    "max_iter": 100,
     "opt_tol": 1e-2,
     "initial_trust_region": 0.3,
-    "filter_radius": 10 / Nx * 2.5,
+    "filter_radius": 10 / Nx * 3,
     "vol_frac": 0.08,
     "initial_vol_frac": 0.2,
     "num_stages": 5,
@@ -85,6 +85,7 @@ multicuts_descriptor = {
     "void_zone": lambda x: np.full(x.shape[1], False),
     "num_divisions": 100,
     "solver_type": "quantum-simulated-subproblem",
+    "filter symmetry": ["x", "y"],
 }
 
 multicuts_optimizer = MulticutsOptimizer(multicuts_descriptor, problem)

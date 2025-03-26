@@ -73,13 +73,13 @@ simp_descriptor = {
     "max_iter": 500,
     "opt_tol": 1e-5,
     "filter_radius": 0.6,
-    "vol_frac": 0.1,
+    "vol_frac": 0.12,
     "beta_interval": 50,
     "beta_max": 128,
     "move": 0.02,
     "penalty": 3,
     "epsilon": 1e-6,
-    "solid_zone": lambda x: np.greater(x[2], 9.8),
+    "solid_zone": lambda x: np.greater(x[2], 9.6),
     "void_zone": lambda x: np.full(x.shape[1], False),
 }
 
