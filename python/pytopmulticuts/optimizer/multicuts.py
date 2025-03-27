@@ -185,7 +185,7 @@ class MulticutsOptimizer(Optimizer):
         self.cuts = Cuts()
         
         if descriptor["subproblem_solver"] == "milp":
-            self.sub_optimizer = MilpOptimizer(problem)
+            self.sub_optimizer = MilpOptimizer(problem, self.num_free, num_elems, self.problem.num_materials, descriptor["solver_type"])
         elif descriptor["subproblem_solver"] == "dw":
             self.sub_optimizer = DWOptimizer(problem, self.num_free, num_elems, self.problem.num_materials, descriptor["num_divisions"], descriptor["solver_type"])
         else:
