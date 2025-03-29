@@ -13,11 +13,14 @@ class Optimizer:
         self.comm = MPI.COMM_WORLD
         self.descriptor = descriptor
         self.problem = problem
+        self.sub_optimizer_name = None
         
     def summary(self):
         if self.comm.rank == 0:
             print("Optimization summary:")
             print("  Optimizer: " + self.optimizer_name)
+            if self.sub_optimizer_name is not None:
+                print("  Subproblem solver: " + self.sub_optimizer_name)
             print("  Number of iterations: " + f"{self.num_iter}")
             print("  Number of FEM analysis: " + f"{self.num_fem}")
             print("  Total analysis time: " + f"{self.analysis_time:.4f} s")

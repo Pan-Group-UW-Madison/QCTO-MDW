@@ -31,8 +31,10 @@ class SimpOptimizer(Optimizer):
             num_elems = self.problem.rho_field[0].x.petsc_vec.array.size
             rho_old1, rho_old2 = np.zeros(num_elems), np.zeros(num_elems)
             low, upp = None, None
+            self.sub_optimizer_name = "MMA"
         elif descriptor["subproblem_solver"] == "oc":
             self.sub_optimizer = OCOptimizer(problem, self.move)
+            self.sub_optimizer_name = "OC"
         else:
             raise ValueError("Invalid subproblem_solver")
             exit(1)
