@@ -141,12 +141,16 @@ class DWOptimizer(SubOptimizer):
         self.rho_list = []
         self.cost_list = []
         
+        compare_milp_solution = True
         check_milp_solution = False
         
-        if check_milp_solution:
+        if check_milp_solution or compare_milp_solution:
+            milp_start = MPI.Wtime()
             rho_milp, cost_milp, lagrange_multiplier_milp = self.milp_solution(rho, obj, weight, quantity, d)
-            if self.comm.rank == 0:
-                print(lagrange_multiplier_milp, flush=True)
+            milp_end = MPI.Wtime()
+        
+        if compare_milp_solution:
+            dw_start = MPI.Wtime()
         
         nD = self.nD
         if n == 1:
@@ -283,6 +287,9 @@ class DWOptimizer(SubOptimizer):
             
             self.lagrange_multiplier_list.append(lagrange_multipliers)
         
+        if compare_milp_solution:
+            dw_end = MPI.Wtime()
+        
         if self.comm.rank == 0:
             print(f"  Converged at iteration {i}", flush=True)
             print(f"  Subproblem time: {sub_problem_time:.4f} s", flush=True)
@@ -291,6 +298,10 @@ class DWOptimizer(SubOptimizer):
             
             if self.subproblem_quantum_simulated:
                 print(f"  Construction time of quantum subproblem: {self.sub_problem_casting_time:.4f} s", flush=True)
+            
+            if compare_milp_solution:
+                print(f"  DW solution time: {dw_end - dw_start:.4f} s", flush=True)
+                print(f"  MILP solution time: {milp_end - milp_start:.4f} s", flush=True)
         
         rho_result = []
         if check_milp_solution:
@@ -484,8 +495,8 @@ class DWOptimizer(SubOptimizer):
                         rho_stacked += rho_global[i*rho_size:(i+1)*rho_size]
                     trust_region_coeff = np.repeat((1 - 2*rho_stacked) / self.rho_global_size, self.num_materials)
                     trust_region_const = trust_region_coeff @ x + np.sum(rho_stacked**2) / self.rho_global_size - d
-                    # material usage constraint
                     model.addConstr(trust_region_const <= 0)
+                    # material usage constraint
                     if self.num_materials > 1:
                         for i in range(rho_size):
                             model.addConstr(x[i:self.num_materials*rho_size:rho_size].sum() <= 1)
@@ -546,7 +557,9 @@ class DWOptimizer(SubOptimizer):
             rho_global_new = self.comm.bcast(rho_global_new, root=0)
             lagrange_multipliers = np.array(self.comm.bcast(lagrange_multipliers, root=0))
             
-            rho_new = rho_global_new[self.rho_offset[self.comm.rank]:self.rho_offset[self.comm.rank+1]]
+            rho_new = np.zeros(self.rho_local_size*self.num_materials)
+            for i in range(self.num_materials):
+                rho_new[i*self.rho_local_size:(i+1)*self.rho_local_size] = rho_global_new[self.rho_offset[self.comm.rank]+self.rho_local_size*i:self.rho_offset[self.comm.rank+1]+self.rho_local_size*i].copy()
             
             if n == 1:
                 if self.comm.rank == 0:

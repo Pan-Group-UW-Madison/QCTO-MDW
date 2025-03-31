@@ -463,9 +463,9 @@ class MulticutsOptimizer(Optimizer):
         
         self.problem.save_results()
     
-    def multi_cuts(self, rho_values, c_value, sens, vol_frac, d):
+    def multi_cuts(self, rho_values, c_value, sens, quantity, d):
         # single cut
-        rho_new, cost = self.sub_optimizer.update(rho_values, c_value, sens, vol_frac, d)
+        rho_new, cost = self.sub_optimizer.update(rho_values, c_value, sens, quantity, d)
         
         self.cuts.add_solution(rho_new, cost, c_value, sens, d)
         
@@ -532,7 +532,7 @@ class MulticutsOptimizer(Optimizer):
                             if self.comm.rank == 0:
                                 print(f"  Checking candidate: {candidate}", flush=True)
                             rho_multicuts, c_multicuts, sens_multicuts, d_multicuts = self.cuts.get_milp_operator(candidate)
-                            candidate_rho_multicuts, candidate_solution_cost = self.sub_optimizer.update(rho_multicuts, c_multicuts, sens_multicuts, vol_frac, d_multicuts)
+                            candidate_rho_multicuts, candidate_solution_cost = self.sub_optimizer.update(rho_multicuts, c_multicuts, sens_multicuts, quantity, d_multicuts)
                             self.cuts.add_solution(candidate_rho_multicuts, candidate_solution_cost, c_multicuts, sens_multicuts, d_multicuts, candidate)
                         
                         if best_candidate_cost > candidate_solution_cost:
