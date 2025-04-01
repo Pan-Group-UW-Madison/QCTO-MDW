@@ -204,7 +204,7 @@ class LinearElasticity(Problem):
             self.eps = Constant(self.mesh, 1e-2)
         else:
             self.interpolation = "continuous"
-            self.eps = Constant(self.mesh, 1e-6)
+            self.eps = Constant(self.mesh, 1e-4)
         
         # Kinematics
         def epsilon(u):
