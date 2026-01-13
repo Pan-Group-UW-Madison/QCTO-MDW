@@ -8,5 +8,5 @@ Reference: [Ye, Zisheng and Pan, Wenxiao, "Towards Quantum Accelerated Large-sca
 # See Also
 [Quantum Topology Optimization via Quantum Annealing](https://github.com/Pan-Group-UW-Madison/qtop)
 
-[Discrete Variable Topology Optimization Using Multi-Cut Formulation and Adaptive Trust Regions](https://link.springer.com/article/10.1007/s00158-025-03961-9)
+[Discrete Variable Topology Optimization Using Multi-Cut Formulation and Adaptive Trust Regions](https://github.com/Pan-Group-UW-Madison/DVTO-MT)
 
