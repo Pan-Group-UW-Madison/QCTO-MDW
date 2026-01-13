@@ -1,24 +1,11 @@
-# Quantum Accelerated Topology Optimization
+# Towards Quantum Accelerated Large-scale Topology Optimization
 
 ## Note:
 
-Currently, it only contains the discrete variable TO implementation.
+This presents the implementation of an efficient topology optimization (TO) method that not only enhances computational efficiency on classical computing but also provides a practical pathway for leveraging quantum computing to achieve further acceleration. The method targets large-scale, multi-material TO of three-dimensional (3D) continuum structures.
 
-Reference: [Ye, Zisheng and Pan, Wenxiao, Discrete Variable Topology Optimization Using Multi-Cut Formulation and Adaptive Trust Regions](https://arxiv.org/abs/2406.12215)
+Reference: [Ye, Zisheng and Pan, Wenxiao, Towards Quantum Accelerated Large-scale Topology Optimization](https://doi.org/10.48550/arXiv.2507.14478)
 
-# Gallery
-
-## 2D Cantilever
-
-|                         **Baseline (SIMP, 150 steps)**                         |                            **Single Material**                             |                            **Five Material**                             |
-| :----------------------------------------------------------------------------: | :------------------------------------------------------------------------: | :----------------------------------------------------------------------: |
-| <img src="Gallery/SingleMaterialCantileverSIMP.gif" width="240" height="160"/> | <img src="Gallery/SingleMaterialCantilever.gif" width="240" height="160"/> | <img src="Gallery/FiveMaterialCantilever.gif" width="240" height="160"/> |
-
-## 2D Inverter
-
-|                        **Baseline (SIMP, 150 steps)**                        |                           **Single Material**                            |                           **Five Material**                            |
-| :--------------------------------------------------------------------------: | :----------------------------------------------------------------------: | :--------------------------------------------------------------------: |
-| <img src="Gallery/SingleMaterialInverterSIMP.gif" width="240" height="240"/> | <img src="Gallery/SingleMaterialInverter.gif" width="240" height="240"/> | <img src="Gallery/FiveMaterialInverter.gif" width="240" height="240"/> |
 
 # See Also
 [Quantum Topology Optimization via Quantum Annealing](https://github.com/Pan-Group-UW-Madison/qtop)
